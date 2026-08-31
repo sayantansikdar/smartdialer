@@ -1,0 +1,444 @@
+/*
+ * SmartDialer dashboard.
+ *
+ * A dark, dense operations console — the idiom an operator watching call volume actually
+ * wants, and the one that keeps a live-updating event stream readable for a long stretch.
+ * Hand-written tokens rather than a framework: the dependency budget is spent on the engine,
+ * and a dashboard of this size does not need a utility system to stay consistent.
+ */
+
+:root {
+  /* Surfaces, darkest to lightest. */
+  --bg: #0b0f14;
+  --surface: #121820;
+  --surface-2: #182029;
+  --surface-3: #1f2934;
+  --border: #263140;
+  --border-strong: #35455a;
+
+  /* Text. */
+  --text: #e6edf5;
+  --text-dim: #9fb0c4;
+  --text-faint: #6b7d92;
+
+  /* Semantic. Chosen to stay distinguishable for the most common colour-vision
+     deficiencies: each pairs a distinct hue with a distinct lightness, and nothing in the
+     UI relies on colour alone — states always carry a label. */
+  --ok: #3fbf7f;
+  --ok-dim: #1c3d2e;
+  --warn: #e0a33e;
+  --warn-dim: #3d3320;
+  --danger: #f0625d;
+  --danger-dim: #3d2224;
+  --info: #57a8f0;
+  --info-dim: #1c3049;
+  --accent: #8b7ff0;
+  --accent-dim: #2a2547;
+
+  --radius: 6px;
+  --radius-lg: 10px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--info); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---------------------------------------------------------------- layout */
+
+.app { display: flex; flex-direction: column; height: 100%; }
+
+.masthead {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 18px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.masthead__brand {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.masthead__spacer { flex: 1; }
+
+.masthead__stats {
+  display: flex;
+  gap: 18px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.masthead__stat b { color: var(--text); font-weight: 600; }
+
+.nav {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.nav__item {
+  padding: 9px 14px;
+  color: var(--text-dim);
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 13px;
+  background: none;
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  font-family: inherit;
+}
+.nav__item:hover { color: var(--text); }
+.nav__item--active { color: var(--text); border-bottom-color: var(--accent); }
+
+.main { flex: 1; overflow-y: auto; padding: 18px; }
+
+.view__header { margin-bottom: 16px; }
+.view__title { font-size: 19px; font-weight: 620; margin: 0 0 4px; letter-spacing: -0.01em; }
+.view__subtitle { color: var(--text-dim); margin: 0; font-size: 13px; max-width: 72ch; }
+
+/* ---------------------------------------------------------------- banners */
+
+/*
+ * The safety banner. Deliberately the most prominent thing on the page: anyone looking at
+ * this dashboard should know within a second that nothing here places real calls.
+ */
+.safety-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 18px;
+  background: var(--ok-dim);
+  border-bottom: 1px solid var(--ok);
+  color: var(--ok);
+  font-size: 12.5px;
+  font-weight: 550;
+  flex-shrink: 0;
+}
+
+.estop-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 18px;
+  background: var(--danger-dim);
+  border-bottom: 1px solid var(--danger);
+  color: var(--danger);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+/* ---------------------------------------------------------------- cards */
+
+.grid { display: grid; gap: 14px; }
+.grid--2 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.grid--3 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.grid--4 { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+}
+
+.card__title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-faint);
+  margin: 0 0 10px;
+  font-weight: 620;
+}
+
+.card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.card__header .card__title { margin: 0; }
+
+/* Stat tile. */
+.stat__value {
+  font-family: var(--mono);
+  font-size: 25px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+.stat__label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-faint);
+  margin-top: 3px;
+  font-weight: 600;
+}
+.stat__hint { font-size: 11.5px; color: var(--text-dim); margin-top: 5px; }
+
+.stat--ok .stat__value { color: var(--ok); }
+.stat--warn .stat__value { color: var(--warn); }
+.stat--danger .stat__value { color: var(--danger); }
+.stat--info .stat__value { color: var(--info); }
+
+/* ---------------------------------------------------------------- meters */
+
+.meter {
+  height: 6px;
+  background: var(--surface-3);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+.meter__fill { height: 100%; background: var(--info); transition: width 220ms ease; }
+.meter__fill--ok { background: var(--ok); }
+.meter__fill--warn { background: var(--warn); }
+.meter__fill--danger { background: var(--danger); }
+
+/* ---------------------------------------------------------------- tables */
+
+.table-wrap { overflow-x: auto; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+th {
+  text-align: left;
+  padding: 7px 10px;
+  color: var(--text-faint);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 620;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--surface-2);
+  vertical-align: middle;
+}
+
+tbody tr:hover { background: var(--surface-2); }
+tbody tr:last-child td { border-bottom: none; }
+
+.num { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--mono); font-size: 12px; }
+
+/* ---------------------------------------------------------------- badges */
+
+.badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 620;
+  letter-spacing: 0.02em;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+.badge--ok { background: var(--ok-dim); color: var(--ok); }
+.badge--warn { background: var(--warn-dim); color: var(--warn); }
+.badge--danger { background: var(--danger-dim); color: var(--danger); }
+.badge--info { background: var(--info-dim); color: var(--info); }
+.badge--accent { background: var(--accent-dim); color: var(--accent); }
+.badge--muted { background: var(--surface-3); color: var(--text-dim); }
+
+/* ---------------------------------------------------------------- controls */
+
+.btn {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  padding: 6px 13px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--text-faint); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn--primary { background: var(--info-dim); border-color: var(--info); color: var(--info); }
+.btn--primary:hover:not(:disabled) { background: #22406a; }
+.btn--danger { background: var(--danger-dim); border-color: var(--danger); color: var(--danger); }
+.btn--danger:hover:not(:disabled) { background: #4d2b2d; }
+.btn--ok { background: var(--ok-dim); border-color: var(--ok); color: var(--ok); }
+.btn--sm { padding: 3px 9px; font-size: 12px; }
+
+.btn-row { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
+
+input, select, textarea {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 9px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text);
+  width: 100%;
+}
+input:focus, select:focus, textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+input[type="range"] { padding: 0; accent-color: var(--accent); }
+
+.field { margin-bottom: 11px; }
+.field__label {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+  font-weight: 550;
+}
+.field__hint { font-size: 11px; color: var(--text-faint); margin-top: 3px; }
+.field__error { font-size: 11.5px; color: var(--danger); margin-top: 4px; }
+
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0 14px; }
+
+/* ---------------------------------------------------------------- event log */
+
+.eventlog {
+  font-family: var(--mono);
+  font-size: 12px;
+  max-height: 460px;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.eventlog__row {
+  display: grid;
+  grid-template-columns: 74px 168px 1fr;
+  gap: 10px;
+  padding: 3px 10px;
+  border-bottom: 1px solid var(--surface);
+  align-items: baseline;
+}
+.eventlog__row:hover { background: var(--surface-2); }
+.eventlog__time { color: var(--text-faint); }
+.eventlog__type { color: var(--text-dim); }
+.eventlog__msg { color: var(--text); overflow-wrap: anywhere; }
+
+.eventlog__row--warn .eventlog__type { color: var(--warn); }
+.eventlog__row--error .eventlog__type { color: var(--danger); }
+.eventlog__row--error .eventlog__msg { color: var(--danger); }
+.eventlog__row--debug { opacity: 0.55; }
+
+/* ---------------------------------------------------------------- misc */
+
+.reasoning {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 9px 11px;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.denial {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  background: var(--warn-dim);
+  border: 1px solid var(--warn);
+  margin-bottom: 6px;
+  font-size: 12.5px;
+}
+.denial--backpressure { background: var(--surface-2); border-color: var(--border); color: var(--text-dim); }
+
+.empty {
+  padding: 26px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.toolbar {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 13px;
+}
+.toolbar input, .toolbar select { width: auto; min-width: 130px; }
+
+.section { margin-bottom: 20px; }
+
+.connection {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.connection__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+.connection__dot--live { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-dim); }
+.connection__dot--down { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-dim); }
+
+.toast {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  max-width: 420px;
+  padding: 11px 14px;
+  border-radius: var(--radius-lg);
+  background: var(--danger-dim);
+  border: 1px solid var(--danger);
+  color: var(--text);
+  font-size: 13px;
+  z-index: 50;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.toast__code { font-family: var(--mono); font-size: 11px; color: var(--danger); display: block; margin-bottom: 3px; }
+
+.split { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 14px; }
+@media (max-width: 1000px) { .split { grid-template-columns: 1fr; } }
+
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 12.5px; }
+.kv dt { color: var(--text-faint); }
+.kv dd { margin: 0; font-family: var(--mono); }
+
+.scroll-y { max-height: 420px; overflow-y: auto; }

@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    // The backend is executed by Node's native type stripping (`node src/index.ts`), so
+    // there is no build step and relative imports carry an explicit `.ts` extension.
+    // `erasableSyntaxOnly` makes the typechecker reject anything type stripping cannot
+    // erase (enums, namespaces, parameter properties). Without it, such code would
+    // typecheck cleanly and then fail at runtime.
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src", "tests", "scripts", "vitest.config.ts"],
+  "exclude": ["web", "node_modules", "dist"]
+}
