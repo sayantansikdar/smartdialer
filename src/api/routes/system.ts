@@ -22,6 +22,9 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: ApiContext): voi
     campaigns: container.campaignService.list().length,
     activeCalls: container.repositories.calls.activeCount(),
     sseSubscribers: ctx.sse.subscriberCount,
+    // What this process reclaimed from a previous one at startup. Surfaced because a crash
+    // that silently tidies up after itself is a crash nobody notices.
+    recovery: container.recoveryReport,
     // Surfaced so the dashboard can display the safety posture prominently rather than
     // making an operator infer it (CONSTRAINTS.md §1).
     safety: {

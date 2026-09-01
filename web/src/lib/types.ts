@@ -218,6 +218,12 @@ export interface SystemStatus {
   campaigns: number;
   activeCalls: number;
   sseSubscribers: number;
+  recovery: {
+    callsReclaimed: number;
+    contactsReleased: number;
+    agentsReleased: number;
+    clean: boolean;
+  };
   safety: { simulationMode: boolean; providerDriver: string; configWarnings: string[] };
 }
 
@@ -257,11 +263,18 @@ export interface ProviderMetrics {
   outageActive: boolean;
 }
 
+export interface ProviderFaults {
+  duplicatesSent: number;
+  reorderedEvents: number;
+  outageCount: number;
+}
+
 export interface ProviderInfo {
   id: string;
   driver: string;
   config: ProviderConfig;
   metrics: ProviderMetrics;
+  faults: ProviderFaults;
 }
 
 export interface SimulationReport {

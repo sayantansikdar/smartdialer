@@ -121,6 +121,23 @@ export interface SimulationReport {
    * would make a healthy run look alarming.
    */
   readonly safetyInterventions: number;
+  /**
+   * What the Safety Controller actually did, by verdict.
+   *
+   * The brief asks to see "safety-controller decisions" alongside utilisation and pacing, and
+   * these four counts are the honest summary: how often the pacer's request was taken as-is,
+   * cut down, refused outright, or replaced by the progressive number because the predictive
+   * estimate had stopped being trustworthy.
+   */
+  readonly safetyDecisions: {
+    readonly approved: number;
+    readonly reduced: number;
+    readonly rejected: number;
+    readonly fallbackToProgressive: number;
+    /** Total calls the pacer asked for, against the total the controller allowed. */
+    readonly totalRequested: number;
+    readonly totalApproved: number;
+  };
   /** Routine flow control: at capacity, at the concurrency limit, or rate limited. */
   readonly capacityBackpressure: number;
 
@@ -518,6 +535,28 @@ export class SimulationService {
     // Split denials by the severity the safety classifier assigned: routine backpressure is
     // debug, genuine protective action is a warning. Reporting them as one number made a
     // perfectly healthy run look like it had intervened a thousand times.
+    // Every tick emits a `dialer.plan` carrying the request, the approval and the verdict, so
+    // the controller's behaviour over a whole run can be summarised from the event log rather
+    // than instrumented separately.
+    const planEvents = container.repositories.events.query({
+      campaignId,
+      types: ['dialer.plan'],
+      limit: 100_000,
+    });
+    const safetyDecisions = planEvents.reduce(
+      (acc, event) => {
+        const verdict = String(event.metadata['verdict'] ?? '');
+        if (verdict === 'APPROVED') acc.approved += 1;
+        else if (verdict === 'REDUCED') acc.reduced += 1;
+        else if (verdict === 'REJECTED') acc.rejected += 1;
+        else if (verdict === 'FALLBACK_PROGRESSIVE') acc.fallbackToProgressive += 1;
+        acc.totalRequested += Number(event.metadata['requested'] ?? 0);
+        acc.totalApproved += Number(event.metadata['approved'] ?? 0);
+        return acc;
+      },
+      { approved: 0, reduced: 0, rejected: 0, fallbackToProgressive: 0, totalRequested: 0, totalApproved: 0 },
+    );
+
     const denialCounts = container.repositories.events
       .countByTypeAndSeverity(campaignId)
       .filter((row) => row.type === 'safety.denied')
@@ -576,6 +615,7 @@ export class SimulationService {
         (eventCounts['safety.abandon_threshold_exceeded'] ?? 0) +
         (eventCounts['safety.emergency_stop'] ?? 0),
       capacityBackpressure: denialCounts.backpressure,
+      safetyDecisions,
 
       contactsByStatus: counts.byStatus,
       providerMetrics: Object.fromEntries(

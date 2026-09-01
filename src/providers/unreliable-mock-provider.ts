@@ -29,6 +29,12 @@ import type { ProviderCallHandle, ProviderCallRequest, ProviderEvent } from './t
 
 export const DEFAULT_UNRELIABLE_CONFIG: MockProviderConfig = {
   ...DEFAULT_MOCK_CONFIG,
+  // Slower on every axis, not just less reliable. The brief contrasts a fast/reliable
+  // Provider A with a *slower* Provider B, and latency is its own failure mode: a provider
+  // that works but takes four times as long holds concurrency slots four times as long,
+  // which starves pacing without ever reporting an error.
+  meanAcceptLatencyMs: 180,
+  meanDialingDelayMs: 400,
   answerRate: 0.68,
   noAnswerRate: 0.15,
   busyRate: 0.1,

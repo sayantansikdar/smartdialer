@@ -34,6 +34,31 @@ export function DashboardView({ events }: { events: readonly SmartDialerEvent[] 
       </div>
 
       {/*
+        A crash that silently tidies up after itself is a crash nobody notices, so this sits
+        above the metrics — it is describing something that already went wrong.
+      */}
+      {status.data !== null && !status.data.recovery.clean && (
+        <div className="section">
+          <div className="card" style={{ borderColor: 'var(--warn)', background: 'var(--warn-dim)' }}>
+            <div className="card__header">
+              <h3 className="card__title" style={{ color: 'var(--warn)' }}>
+                Recovered from an unclean shutdown
+              </h3>
+              <span className="badge badge--warn">RECOVERED</span>
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--text)' }}>
+              A previous process left work in flight. On startup this one reclaimed{' '}
+              <strong>{status.data.recovery.callsReclaimed}</strong> call(s),{' '}
+              released <strong>{status.data.recovery.contactsReleased}</strong> contact(s) and{' '}
+              freed <strong>{status.data.recovery.agentsReleased}</strong> agent(s).
+              Reclaimed calls are recorded as timeouts, not failures — the outage was ours, so
+              those contacts remain retriable.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/*
         Invariants first. This is the headline correctness signal, and burying it below the
         metrics would defeat the point of checking them continuously.
       */}

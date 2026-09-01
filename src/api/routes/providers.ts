@@ -5,18 +5,38 @@ import { providerConfigSchema } from '../schemas.ts';
 export function registerProviderRoutes(app: FastifyInstance, ctx: ApiContext): void {
   const { container } = ctx;
 
+  /**
+   * Fault counters the unreliable driver keeps but the base one does not.
+   *
+   * Surfaced so the chaos is visible rather than mysterious: a dashboard showing an odd event
+   * stream should be able to say "the provider duplicated 40 events" rather than leaving
+   * someone to wonder whether the engine is broken.
+   */
+  const faults = (provider: { duplicatesSent?: number; reorderedEvents?: number; outageCount?: number }) => ({
+    duplicatesSent: provider.duplicatesSent ?? 0,
+    reorderedEvents: provider.reorderedEvents ?? 0,
+    outageCount: provider.outageCount ?? 0,
+  });
+
   app.get('/api/providers', async () => ({
     providers: container.providers.list().map((provider) => ({
       id: provider.id,
       driver: provider.driver,
       config: provider.getConfig(),
       metrics: provider.metrics(),
+      faults: faults(provider as unknown as Parameters<typeof faults>[0]),
     })),
   }));
 
   app.get('/api/providers/:id', async (request) => {
     const provider = container.providers.getMock(parseId(request));
-    return { id: provider.id, driver: provider.driver, config: provider.getConfig(), metrics: provider.metrics() };
+    return {
+      id: provider.id,
+      driver: provider.driver,
+      config: provider.getConfig(),
+      metrics: provider.metrics(),
+      faults: faults(provider as unknown as Parameters<typeof faults>[0]),
+    };
   });
 
   /**

@@ -176,6 +176,13 @@ export class DialerEngine {
     options.events.on('safety.emergency_resume', () => {
       this.resumeStalled();
     });
+
+    // An agent returning is the other way a stood-down campaign becomes dialable again.
+    // Without this the "no agents online" stand-down would be permanent, which is a worse
+    // bug than the spinning it replaced.
+    options.events.on('agent.available', () => {
+      this.resumeStalled();
+    });
   }
 
   /**
@@ -351,12 +358,18 @@ export class DialerEngine {
     // action to clear, so continuing to tick would burn cycles denying every dial — for
     // minutes on the dashboard, and forever in a simulation, which would never go idle and
     // so would never finish.
+    // Conditions that provably prevent dialing and require something outside the engine to
+    // change before it could resume. Ticking through them achieves nothing but noise.
     const blockedReason =
       current.predictivePausedReason !== null
         ? 'predictive dialing is paused by the abandon-rate control'
         : this.#options.isEmergencyStopped()
           ? 'the emergency stop is engaged'
-          : null;
+          : this.#options.agentService.listByCampaign(campaignId).every(
+                (agent) => agent.status === 'OFFLINE' || agent.status === 'PAUSED',
+              )
+            ? 'no agents are online'
+            : null;
 
     if (blockedReason !== null && this.activeCallCount(campaignId) === 0) {
       this.#stalled.add(campaignId);

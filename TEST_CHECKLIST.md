@@ -164,3 +164,20 @@ Run against a clean copy of the repository: no `node_modules`, no `data/`, no `.
 Row 67 is the one that matters. DNC is a one-way door everywhere else in the system; a reset
 that quietly reopened it would mean the guarantee held right up until someone pressed a button
 labelled "run it again".
+
+## Dashboard after the Safety Controller refactor
+
+Re-verified in a headless browser, because the refactor changed the shape the campaign detail
+view reads (`DialPlan.attempts` became `requested`, plus a controller decision alongside it).
+
+| # | Check | Expected | Actual | Status |
+|---|---|---|---|---|
+| 71 | All eight views render after the refactor | No blank pages, no errors | all 8 titles rendered, **0 page errors** | ✅ pass |
+| 72 | "Why this many calls?" shows both numbers | Pacer's request *and* controller's verdict | `Pacing engine requested 0 → Safety controller approved 0` with an `APPROVED` badge | ✅ pass |
+| 73 | Two reasoning blocks | Pacing reasoning and controller decision, separately | both present; pacing block shows the full chain incl. the sigma clamp | ✅ pass |
+| 74 | New scenarios appear without UI changes | The view reads them from the API | 13 listed, incl. `pacing-a`…`pacing-d`, `agent-drop` | ✅ pass |
+| 75 | Recovery banner after a real crash | Shown, with counts | `kill -9` with 9 calls in flight → `reclaimed 10 call(s), released 10 contact(s)` | ✅ pass |
+| 76 | Provider fault counters | Duplicates and reorders visible | `duplicatesSent 13`, `reorderedEvents 13` rendered as tiles | ✅ pass |
+
+Row 75 is a genuine `kill -9` against a running campaign, not a simulated one — the process was
+killed with calls actually in flight and the next start reconciled them.
