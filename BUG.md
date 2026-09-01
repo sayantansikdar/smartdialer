@@ -671,3 +671,48 @@ Both were correct improvements and neither was the bottleneck. Only profiling th
 operations found it. Worth remembering the next time a performance hypothesis feels obvious.
 
 The curve is still superlinear (205× for 60×) — `SCALE.md` names what is next and why.
+
+---
+
+## B-017 — A campaign with no agents online spun forever
+
+**Status:** FIXED
+
+**Observed behavior.** Taking the last agent offline mid-campaign produced, in a single test
+run:
+
+```
+safety.denied   : 200,004 events
+virtual clock   : 50,001 s
+real time       : 8,741 ms   (stopped only by the run's real-time guard)
+campaign status : RUNNING
+```
+
+The campaign ticked forever, denying every dial, doing nothing.
+
+**Expected behavior.** A campaign that provably cannot dial stands down and waits for the
+condition to change.
+
+**Reproduction.** `tests/failure/setup-race.test.ts` → "does not strand the call when the only
+agent goes offline mid-ring". Before the fix that test took 8.6 s of real time and only
+completed because the harness caps it.
+
+**Root cause.** B-003 introduced a stand-down for campaigns blocked by something requiring
+deliberate operator action, and enumerated exactly two such conditions: an abandon-rate pause
+and the emergency stop. "Every agent is offline" is the same kind of condition — nothing the
+engine does will change it — but it was not in the list, so the campaign kept ticking.
+
+**Affected components.** `src/services/dialer-engine.ts`.
+
+**Fix.** Added "no agents are online" to the stand-down conditions, and subscribed the engine
+to `agent.available` so an agent returning revives a stood-down campaign. That second half
+matters as much as the first: a stand-down with no way back is a worse bug than the spinning
+it replaced.
+
+**Verification.** Same scenario after the fix: **2 ms**, 23 denials, 6 s of virtual time,
+`stalled: true`. Bringing the agent back online resumed dialing immediately (3 calls placed).
+
+**Note for the future.** This is the third time the same shape has appeared: a campaign that
+cannot proceed burning cycles instead of standing down. The condition list in `tick` is worth
+treating as a checklist whenever a new blocking condition is introduced — "can the engine
+itself ever clear this?" If not, it belongs in the stand-down.

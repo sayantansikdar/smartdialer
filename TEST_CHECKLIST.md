@@ -181,3 +181,18 @@ view reads (`DialPlan.attempts` became `requested`, plus a controller decision a
 
 Row 75 is a genuine `kill -9` against a running campaign, not a simulated one — the process was
 killed with calls actually in flight and the next start reconciled them.
+
+## Assignment-specific failure cases
+
+Each is named explicitly in the brief.
+
+| # | Case | Expected | Actual | Status |
+|---|---|---|---|---|
+| 77 | Agent disappears during call setup | Call terminates, slot and contact released | no stranded calls, ledger 0, no contact left mid-flight | ✅ pass |
+| 78 | …and is never recorded as a success | No call `ANSWERED` with a null agent | zero such rows | ✅ pass |
+| 79 | Dialing resumes when an agent returns | New calls placed | calls placed after `bringOnline` | ✅ pass |
+| 80 | Worker crashes immediately after ANSWERED | Stranded state is recognisable and reconcilable | active calls with `agentId` set, all carrying campaign + contact | ✅ pass |
+| 81 | Late COMPLETED after crash recovery | Ignored; call stays terminal | call remained `TIMEOUT`, no slot leaked | ✅ pass |
+| 82 | Campaign with no agents online | Stands down rather than spinning | 8,741 ms → **2 ms**; 200,004 denials → **23** (B-017) | ✅ pass |
+| 83 | Safety-controller decisions in the report | Verdict counts shown | `approved 160 · reduced 2 · rejected 11 · fell back to progressive 7` | ✅ pass |
+| 84 | Provider B is slower than Provider A | Higher accept and dial latency | 180 ms vs 40 ms accept; 400 ms vs 100 ms dialing | ✅ pass |
