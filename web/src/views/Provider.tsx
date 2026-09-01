@@ -100,6 +100,35 @@ export function ProviderView(): React.JSX.Element {
         <Stat label="Active calls" value={count(metrics.activeCalls)} tone="info" />
       </div>
 
+      {/*
+        Only the unreliable driver produces these, and they are worth showing prominently:
+        without them, an event stream full of repeats looks like the engine misbehaving rather
+        than the provider doing exactly what it was configured to do.
+      */}
+      {(current.faults.duplicatesSent > 0 ||
+        current.faults.reorderedEvents > 0 ||
+        current.faults.outageCount > 0) && (
+        <div className="section grid grid--3">
+          <Stat
+            label="Duplicate events sent"
+            value={count(current.faults.duplicatesSent)}
+            tone="warn"
+            hint="redelivered webhooks — the engine must ignore them"
+          />
+          <Stat
+            label="Events reordered"
+            value={count(current.faults.reorderedEvents)}
+            tone="warn"
+            hint="delivered after the event that followed them"
+          />
+          <Stat
+            label="Outages entered"
+            value={count(current.faults.outageCount)}
+            tone={current.faults.outageCount > 0 ? 'danger' : undefined}
+          />
+        </div>
+      )}
+
       <div className="split">
         <Card title="Failure injection">
           <div className="btn-row section">
