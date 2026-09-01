@@ -28,8 +28,18 @@ const steps = [
 
 if (!quick) {
   steps.push({ name: 'build', cmd: 'npx', args: ['vite', 'build'] });
-  steps.push({ name: 'migrate', cmd: 'node', args: ['scripts/migrate.mjs'], env: { DATABASE_PATH: './data/verify.db' } });
-  steps.push({ name: 'seed', cmd: 'node', args: ['scripts/seed.mjs'], env: { DATABASE_PATH: './data/verify.db' } });
+  steps.push({
+    name: 'migrate',
+    cmd: 'node',
+    args: ['--experimental-strip-types', '--env-file-if-exists=.env', 'scripts/migrate.mjs'],
+    env: { DATABASE_PATH: './data/verify.db' },
+  });
+  steps.push({
+    name: 'seed',
+    cmd: 'node',
+    args: ['--experimental-strip-types', '--env-file-if-exists=.env', 'scripts/seed.mjs'],
+    env: { DATABASE_PATH: './data/verify.db' },
+  });
 
   // The scenarios are the highest-value check: each asserts both that its invariants held and
   // that it actually demonstrated the behaviour it claims.
@@ -37,12 +47,17 @@ if (!quick) {
     'progressive', 'predictive', 'predictive-small-team', 'provider-fail',
     'timeout', 'emergency-stop', 'dnc', 'race',
   ]) {
-    steps.push({ name: `scenario: ${scenario}`, cmd: 'node', args: ['src/sim/scenario-cli.ts', scenario] });
+    steps.push({
+      name: `scenario: ${scenario}`,
+      cmd: 'node',
+      args: ['--experimental-strip-types', '--env-file-if-exists=.env', 'src/sim/scenario-cli.ts', scenario],
+    });
   }
 }
 
 const results = [];
 const verbose = args.has('--verbose');
+const defaultNodeOptions = [process.env.NODE_OPTIONS, '--experimental-strip-types'].filter(Boolean).join(' ');
 
 for (const step of steps) {
   process.stdout.write(`  ${step.name.padEnd(28)} `);
@@ -50,7 +65,7 @@ for (const step of steps) {
   const result = spawnSync(step.cmd, step.args, {
     stdio: verbose ? 'inherit' : 'pipe',
     encoding: 'utf8',
-    env: { ...process.env, ...step.env },
+    env: { ...process.env, NODE_OPTIONS: defaultNodeOptions, ...step.env },
   });
   const ms = Date.now() - started;
   const ok = result.status === 0;

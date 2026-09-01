@@ -10,8 +10,10 @@ import { dirname } from 'node:path';
 const { Database } = await import('../src/db/database.ts');
 const { migrate } = await import('../src/db/migrator.ts');
 const { loadConfig } = await import('../src/config/index.ts');
+const { assertServerNotRunning } = await import('./guard-running-server.mjs');
 
 const config = loadConfig();
+await assertServerNotRunning('reset the database');
 if (config.databasePath === ':memory:') {
   console.log('DATABASE_PATH is :memory: — nothing to reset.');
   process.exit(0);

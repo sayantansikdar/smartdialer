@@ -1,12 +1,8 @@
 # Continuous verification.
 #
-# NOTE ON PLACEMENT: SmartDialer currently lives as a subdirectory of a multi-project
-# workspace repository (DECISIONS.md D-001), and GitHub only reads workflows from the
-# repository root. This file therefore does not run as things stand — it is here so that
-# splitting the project into its own repository (`git subtree split`, as D-001 anticipates)
-# makes CI work immediately, with no setup.
-#
-# Until then, `npm run verify` runs exactly the same checks locally in about 19 seconds.
+# Runs on every push and pull request to main.
+# Runs typecheck, lint, all test suites, frontend production build, migrations, seeding,
+# and all eight verification scenarios across active Node versions (22 and 24).
 
 name: CI
 
@@ -14,25 +10,25 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['22', '24']
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          # 22.6 is the floor for flag-free TypeScript type stripping, which the backend
-          # depends on — there is no build step (D-005).
-          node-version: '22.6'
+          node-version: ${{ matrix.node-version }}
           cache: npm
 
       - run: npm ci
 
-      # One command, because a checklist that is run selectively is a checklist whose
-      # unrun row is the one that breaks. This runs typecheck, lint, all five backend test
-      # suites, the frontend tests, the production build, migrations, seeding, and all eight
-      # scenarios — each of which asserts both its invariants and that it demonstrated the
-      # behaviour it claims.
       - run: npm run verify
+        env:
+          NODE_OPTIONS: '--experimental-strip-types'
+

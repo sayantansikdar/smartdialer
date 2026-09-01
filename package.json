@@ -5,13 +5,13 @@
   "type": "module",
   "description": "SmartDialer — a runnable, testable prototype of a progressive/predictive outbound dialer. Mock telecom providers only; never places real calls.",
   "engines": {
-    "node": ">=22.6.0"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "dev:api": "node --watch src/index.ts",
+    "dev:api": "node --experimental-strip-types --env-file-if-exists=.env --watch src/index.ts",
     "dev:web": "vite",
-    "start": "node src/index.ts",
+    "start": "node --experimental-strip-types --env-file-if-exists=.env src/index.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -22,10 +22,10 @@
     "test:concurrency": "vitest run tests/concurrency",
     "test:failure": "vitest run tests/failure",
     "test:simulation": "vitest run tests/simulation",
-    "db:migrate": "node scripts/migrate.mjs",
-    "db:reset": "node scripts/reset-db.mjs",
-    "seed": "node scripts/seed.mjs",
-    "scenario": "node src/sim/scenario-cli.ts",
+    "db:migrate": "node --experimental-strip-types --env-file-if-exists=.env scripts/migrate.mjs",
+    "db:reset": "node --experimental-strip-types --env-file-if-exists=.env scripts/reset-db.mjs",
+    "seed": "node --experimental-strip-types --env-file-if-exists=.env scripts/seed.mjs",
+    "scenario": "node --experimental-strip-types --env-file-if-exists=.env src/sim/scenario-cli.ts",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
     "test:web": "vitest run --project web",

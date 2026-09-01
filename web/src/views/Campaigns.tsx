@@ -71,7 +71,7 @@ export function CampaignsView({ onChanged }: { onChanged: () => void }): React.J
     );
   };
 
-  const act = (id: string, verb: 'start' | 'pause' | 'resume' | 'stop' | 'ready'): void => {
+  const act = (id: string, verb: 'start' | 'pause' | 'resume' | 'stop' | 'ready' | 'reset'): void => {
     void action.run(() => api.campaignAction(id, verb), () => {
       campaigns.reload();
       onChanged();
@@ -205,6 +205,15 @@ export function CampaignsView({ onChanged }: { onChanged: () => void }): React.J
                         {(campaign.status === 'RUNNING' || campaign.status === 'PAUSED') && (
                           <button className="btn btn--sm btn--danger" onClick={() => act(campaign.id, 'stop')}>
                             Stop
+                          </button>
+                        )}
+                        {(campaign.status === 'COMPLETED' || campaign.status === 'STOPPED' || campaign.status === 'FAILED') && (
+                          <button
+                            className="btn btn--sm"
+                            title="Put unsuccessful contacts back in the pool and run again. Never restores DO_NOT_CALL contacts."
+                            onClick={() => act(campaign.id, 'reset')}
+                          >
+                            Reset
                           </button>
                         )}
                         <button className="btn btn--sm" onClick={() => navigate('campaign', campaign.id)}>

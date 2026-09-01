@@ -67,12 +67,69 @@ async function main(): Promise<void> {
   );
 }
 
+/**
+ * Turn a startup failure into something actionable.
+ *
+ * The default messages for the two most common ones are actively unhelpful: `EADDRINUSE`
+ * names a syscall, and SQLite's "unable to open database file" reads like corruption when it
+ * usually means a missing directory or a bad path. Someone hitting these is, by definition,
+ * someone who has not got the app running yet — the worst moment to hand them a stack trace.
+ */
+function explainStartupFailure(error: unknown): string | null {
+  const code = (error as { code?: string }).code;
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (code === 'EADDRINUSE') {
+    const port = Number(process.env['PORT'] ?? 3000);
+    return [
+      `Port ${port} is already in use.`,
+      '',
+      '  Another SmartDialer may already be running. Either stop it, or use a different port:',
+      '',
+      `      PORT=${port + 1} npm run dev`,
+      '',
+      '  To find what is holding the port:',
+      '',
+      `      lsof -ti:${port}`,
+    ].join('\n');
+  }
+
+  if (message.includes('unable to open database file')) {
+    return [
+      `Could not open the database at ${process.env['DATABASE_PATH'] ?? './data/smartdialer.db'}.`,
+      '',
+      '  Check that DATABASE_PATH points somewhere writable, then rebuild it:',
+      '',
+      '      npm run db:reset && npm run seed',
+    ].join('\n');
+  }
+
+  return null;
+}
+
 main().catch((error: unknown) => {
   // Startup failures print in full and exit non-zero. A dialer that half-started would be
   // worse than one that did not start at all.
-  const logger = createLogger({ level: 'error', clock: new SimulatedClock() });
+  const explanation = explainStartupFailure(error);
+  if (explanation !== null) {
+    process.stderr.write(`\n  SmartDialer could not start.\n\n  ${explanation}\n\n`);
+    process.exit(1);
+  }
+
+  // A bare clock starts at virtual zero, which stamped every startup failure 1970-01-01 and
+  // made a real error look like a broken build. Configuration may itself be what failed, so
+  // the epoch is read defensively rather than through loadConfig.
+  const epochMs = Number(process.env['EPOCH_MS'] ?? Date.parse('2026-01-01T09:00:00.000Z'));
+  const logger = createLogger({ level: 'error', clock: new SimulatedClock(), epochMs });
   if (isSmartDialerError(error)) {
     logger.error(error.message, { code: error.code, ...error.metadata });
+    // A configuration refusal is a decision, not a crash — say what to do about it.
+    if (error.code === 'SIMULATION_MODE_REQUIRED') {
+      process.stderr.write(
+        '\n  This prototype only simulates telephony and has no real-provider\n' +
+          '  implementation. Set SIMULATION_MODE=true in your .env to start.\n\n',
+      );
+    }
   } else {
     logger.error('Failed to start', {
       error: error instanceof Error ? (error.stack ?? error.message) : String(error),

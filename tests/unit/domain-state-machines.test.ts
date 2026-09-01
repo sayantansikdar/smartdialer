@@ -29,11 +29,26 @@ describe('Campaign state machine', () => {
     );
   });
 
-  it('treats COMPLETED and FAILED as terminal', () => {
+  it('treats COMPLETED and FAILED as terminal for automatic progress', () => {
+    // Terminal means the dialer will not advance these on its own.
     expect(campaignStateMachine.isTerminal('COMPLETED')).toBe(true);
     expect(campaignStateMachine.isTerminal('FAILED')).toBe(true);
+  });
+
+  it('never resumes a finished campaign directly into RUNNING', () => {
+    // The property that actually matters: a campaign that exhausted its contacts or failed
+    // structurally must not silently pick up where it left off.
     expect(campaignStateMachine.can('COMPLETED', 'RUNNING')).toBe(false);
-    expect(campaignStateMachine.can('FAILED', 'READY')).toBe(false);
+    expect(campaignStateMachine.can('FAILED', 'RUNNING')).toBe(false);
+    expect(campaignStateMachine.can('COMPLETED', 'PAUSED')).toBe(false);
+  });
+
+  it('allows an explicit reset back to READY from any finished state', () => {
+    // Reset discards the previous run rather than continuing it, and READY still requires a
+    // deliberate start afterwards. See CampaignService.reset.
+    for (const status of ['COMPLETED', 'FAILED', 'STOPPED'] as const) {
+      expect(campaignStateMachine.can(status, 'READY'), status).toBe(true);
+    }
   });
 
   it('allows a stopped campaign to be reset and re-run', () => {

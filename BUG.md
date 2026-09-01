@@ -361,3 +361,142 @@ resolve to the dashboard with a null parameter.
 found, on the first run, in a thirty-line module — which is the argument for the suite. The
 web layer had been verified by browser automation, and browser automation only exercises the
 paths someone thought to click. A trailing slash is not one of them.
+
+---
+
+## B-007 — The `.env` file the README tells you to create was never read
+
+**Status:** FIXED (found while running the app)
+
+**Observed behavior.** `README.md` and `.env.example` both instruct the user to
+`cp .env.example .env` and edit it. Nothing in the repository ever loaded that file. Every
+setting in it — `SIMULATION_SPEED`, `GLOBAL_MAX_CONCURRENT_CALLS`, `DATABASE_PATH`,
+`PROVIDER_TIMEOUT_MS`, all of it — was silently ignored, and the process ran on defaults.
+
+**Expected behavior.** Values in `.env` take effect.
+
+**Reproduction steps.** Write `SIMULATION_SPEED=3` into `.env`, run `npm run dev`, and observe
+the boot banner still reporting `Clock speed 10x`.
+
+**Root cause.** `loadConfig()` reads `process.env` and nothing else, which is correct and
+deliberate — it keeps the function pure and testable (CONSTRAINTS.md §3: one module reads the
+environment). The missing half was that no entry point ever *populated* `process.env` from a
+file. There is no `dotenv` dependency and no `--env-file` flag on any script.
+
+The failure mode is the worst kind: entirely silent. A user setting a lower concurrency limit
+would believe they had, and get the default.
+
+**Why the tests could not see it.** Every test calls `loadConfig(literalObject)` or
+`testConfig()`, passing configuration in directly. Nothing in the suite ever exercised the path
+a real user takes — file to `process.env` to `loadConfig()` — because the tests deliberately do
+not depend on ambient environment. The same property that makes config testable is what hid
+this.
+
+**Affected components.** `package.json` scripts, `scripts/dev.mjs`.
+
+**Fix.** `--env-file-if-exists=.env` on every entry point that reads configuration: `dev:api`,
+`start`, `db:migrate`, `db:reset`, `seed`, `scenario`, and the API process spawned by
+`scripts/dev.mjs`. Node loads it natively, so no dependency was added, and the
+`-if-exists` variant means a missing `.env` is not an error.
+
+**Verification.** `SIMULATION_SPEED=3` in `.env` → boot banner reads `Clock speed 3x` and
+`/api/system/status` reports `speed: 3`. `GLOBAL_MAX_CONCURRENT_CALLS=37` → config reports 37.
+
+Separately confirmed that the newly-live path **cannot be used to disable the safety gate**:
+`SIMULATION_MODE=false` in `.env` still refuses to start with `SIMULATION_MODE_REQUIRED`,
+because the gate lives in `loadConfig` and does not care where the value came from.
+
+**Note for the future.** This is the third bug in this project found by *running* the thing
+rather than testing it (with B-005, the restart collision, and B-006, the trailing-slash
+route). All three lived in the seam between a well-tested component and the way a real user
+reaches it. A suite that isolates its units perfectly will never cover those seams — which is
+an argument for the smoke path in `npm run verify`, not against the isolation.
+
+---
+
+## B-008 — A fresh clone could not start: the database directory did not exist
+
+**Status:** FIXED (found by a cold-start test)
+
+**Observed behavior.** On a clean checkout, running `npm run dev` without first running
+`npm run db:migrate` failed with:
+
+```
+Failed to start: Error: unable to open database file
+    at new Database (src/db/database.ts:33:16)
+```
+
+**Expected behavior.** `npm run dev` works on a fresh clone. The container already runs
+migrations at startup, so the only thing standing in the way was a missing folder.
+
+**Reproduction steps.** Copy the repository without `data/`, `npm install`, then `npm run dev`.
+
+**Root cause.** SQLite will not create a missing parent directory, and `data/` is gitignored so
+it does not exist on a fresh clone. Its error message — "unable to open database file" — names
+neither the file nor the reason, and reads like corruption rather than a missing folder.
+
+**Affected components.** `src/db/database.ts`.
+
+**Fix.** `mkdirSync(dirname(path), { recursive: true })` in the `Database` constructor, skipped
+for `:memory:`. Combined with the migrations the container already ran, this means a fresh
+clone now needs **only** `npm install && npm run dev` — `db:migrate` and `seed` became
+optional conveniences rather than prerequisites.
+
+**Verification.** Cold-start test: clean copy, no `data/`, no `.env`, no migrate, no seed →
+API up, `/api/campaigns` returns `[]`, `data/` created automatically.
+
+**Note for the future.** Two further startup failures were made actionable at the same time,
+though neither was a defect as such: `EADDRINUSE` now suggests a free port and how to find
+what is holding the current one, and a database-open failure names the path and the command to
+rebuild it. Both are hit by someone who has not got the app running yet — the worst possible
+moment to be handed a stack trace.
+
+---
+
+## B-009 — A finished campaign was a dead end
+
+**Status:** FIXED
+
+**Observed behavior.** Not a crash — a usability dead end that made the project fail its own
+"completely runnable" claim. Seeded campaigns have finite contacts. Once a campaign worked
+through them it moved to COMPLETED, and there was no way to run it again from the dashboard:
+`start` correctly refused (no contacts remaining), and COMPLETED was terminal. The only way
+back was `npm run db:reset && npm run seed` in a terminal.
+
+Observed live: opening the dashboard after a demo showed three campaigns, all inert, with
+nothing to press.
+
+**Expected behavior.** A finished demo campaign can be run again from the UI.
+
+**Root cause.** The domain modelled *resuming* but not *resetting*, and only the former was
+ever ruled out. Continuing a finished run should indeed be impossible; discarding it and
+starting over is a different operation that simply had no representation.
+
+**Affected components.** `src/domain/campaign.ts`, `src/services/campaign-service.ts`,
+`src/db/repositories/contact-repository.ts`, `src/api/routes/campaigns.ts`, and both campaign
+views.
+
+**Fix.** `POST /api/campaigns/:id/reset`, plus a Reset button on the campaign list and detail
+pages. It returns unsuccessful contacts to the pool with their attempt counters cleared, moves
+the campaign to READY, and clears any abandon-rate pause (which measured a run that no longer
+exists). It refuses while the campaign is still running.
+
+Two contact states are deliberately **not** restored:
+
+* `DO_NOT_CALL` — a one-way door everywhere else in the system. A reset that quietly reopened
+  it would mean the whole DNC guarantee held right up until someone pressed a button labelled
+  "run it again".
+* `COMPLETED` — someone already reached that person; a demo reset is not a reason to call them
+  a second time.
+
+`COMPLETED -> READY` and `FAILED -> READY` were added to the campaign state machine as
+explicit reset-only edges, rather than writing the status directly. Bypassing the machine
+would have made it a description of *some* transitions instead of all of them, which is the
+only property that makes it worth having. Neither edge leads to RUNNING, so nothing can
+silently resume.
+
+**Regression test.** `tests/failure/campaign-reset.test.ts` — 7 tests, led by "never restores a
+DO_NOT_CALL contact", which resets and then runs a **second full campaign** before asserting
+`callsToDoNotCallContacts()` is still empty.
+
+**Verification.** All 7 pass; `npm run verify` green at 19/19.

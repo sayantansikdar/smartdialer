@@ -8,7 +8,12 @@
 import { spawn } from 'node:child_process';
 
 const children = [
-  spawn('node', ['--watch', 'src/index.ts'], { stdio: 'inherit', env: process.env }),
+  // `--env-file-if-exists` so the `.env` the README tells users to create is actually read,
+  // and so its absence is not an error. Node loads it natively; no dotenv dependency.
+  spawn('node', ['--experimental-strip-types', '--env-file-if-exists=.env', '--watch', 'src/index.ts'], {
+    stdio: 'inherit',
+    env: process.env,
+  }),
   spawn('npx', ['vite'], { stdio: 'inherit', env: process.env }),
 ];
 

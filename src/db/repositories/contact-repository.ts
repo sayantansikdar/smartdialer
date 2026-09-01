@@ -277,6 +277,31 @@ export class ContactRepository {
     return Number(row?.n ?? 0);
   }
 
+  /**
+   * Return a campaign's finished contacts to the dialable pool.
+   *
+   * The one thing this must never touch is `DO_NOT_CALL`. That state is a one-way door
+   * everywhere else in the system, and a reset that quietly reopened it would be the single
+   * most damaging bug this codebase could have — the whole DNC guarantee would hold right up
+   * until someone pressed a button labelled "run it again".
+   *
+   * `COMPLETED` is also preserved: someone already reached that person, and a demo reset is
+   * not a reason to call them a second time. Only unsuccessful outcomes become dialable
+   * again, with their attempt counters cleared.
+   */
+  resetForReplay(campaignId: string, now: number): number {
+    return this.#db.run(
+      `UPDATE contacts
+       SET status = 'READY', attempt_count = 0, next_attempt_at = NULL,
+           last_attempt_at = NULL, updated_at = ?
+       WHERE campaign_id = ?
+         AND status IN ('EXHAUSTED', 'NO_ANSWER', 'BUSY', 'FAILED', 'RETRY_PENDING',
+                        'RESERVED', 'DIALING', 'RINGING', 'CONNECTED')`,
+      now,
+      campaignId,
+    ).changes;
+  }
+
   markDoNotCall(id: string, now: number): void {
     this.#db.run(
       `UPDATE contacts SET status = 'DO_NOT_CALL', updated_at = ? WHERE id = ?`,

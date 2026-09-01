@@ -21,7 +21,7 @@ Re-run the whole list after any rollback (`ROLLBACK.md`).
 | # | Command | Expected | Actual | Status |
 |---|---|---|---|---|
 | 1 | `npm install` | Dependencies resolve, no peer conflicts | `added 190 packages, and audited 191 packages` · `found 0 vulnerabilities` | ✅ pass |
-| 2 | `node --version` | ≥ 22.6 (native TypeScript type stripping) | `v25.9.0` | ✅ pass |
+| 2 | `node --version` | ≥ 22.12 (Vite 8/Rolldown requirement & TypeScript type stripping) | `v25.9.0` | ✅ pass |
 | 3 | Node runs `.ts` directly | A `.ts` file importing another `.ts` executes | `type-stripping works, x = 42` | ✅ pass |
 | 4 | `node:sqlite` conditional UPDATE is atomic | Second identical CAS reports 0 rows changed | `first reserve changes: 1` · `second reserve changes: 0` | ✅ pass |
 
@@ -123,3 +123,44 @@ changed **real server state**, because a control that only shows a toast is a de
 
 Row 55 matters more than row 54. A verification script that cannot fail is worse than no
 script at all, because it converts an unchecked codebase into one that looks checked.
+
+## Configuration loading
+
+| # | Command | Expected | Actual | Status |
+|---|---|---|---|---|
+| 56 | `SIMULATION_SPEED=3` in `.env`, then `npm run dev` | The value takes effect | boot banner `Clock speed 3x`; `/api/system/status` reports `speed: 3` | ✅ pass |
+| 57 | `GLOBAL_MAX_CONCURRENT_CALLS=37` in `.env` | The value takes effect | `config.limits.globalMaxConcurrentCalls === 37` | ✅ pass |
+| 58 | **`SIMULATION_MODE=false` in `.env`** | Startup still refuses — the safety gate does not care where a value came from | `SMARTDIALER refused: SIMULATION_MODE_REQUIRED` | ✅ pass |
+| 59 | No `.env` present | Runs on documented defaults, no error | `--env-file-if-exists` prints a notice and continues | ✅ pass |
+
+Row 58 is the one that matters. Making `.env` live (B-007) opened a new path into
+configuration, and the first thing to check about a new path into configuration is that it
+cannot be used to turn the safety gate off.
+
+## Cold start — what a new person actually experiences
+
+Run against a clean copy of the repository: no `node_modules`, no `data/`, no `.env`, no
+`web/dist`.
+
+| # | Command | Expected | Actual | Status |
+|---|---|---|---|---|
+| 60 | `npm install && npm run dev` **and nothing else** | The app starts | API 200, dashboard 200, `data/` created automatically, migrations applied, invariants `PASSED`, 0 campaigns | ✅ pass |
+| 61 | The full documented flow (`install` → `.env` → `db:migrate` → `seed` → `dev`) | Works, seeds 3 campaigns | 3 campaigns / 28 agents / 275 contacts / 15 DNC | ✅ pass |
+| 62 | `npm run dev` with port 3000 taken | An actionable message, not a stack trace | `Port 3996 is already in use.` + suggested free port + `lsof` command | ✅ pass |
+| 63 | `SIMULATION_MODE=false` in `.env` | Refuses, and says what to do | `SIMULATION_MODE_REQUIRED` + "Set SIMULATION_MODE=true in your .env to start." | ✅ pass |
+| 64 | `npm run seed` while the server is running | Refuses rather than corrupting id counters | `Refusing to seed: a SmartDialer is running on 127.0.0.1:3000` + how to stop it | ✅ pass |
+
+## Campaign reset
+
+| # | Check | Expected | Actual | Status |
+|---|---|---|---|---|
+| 65 | Start a campaign again after it COMPLETED | Refused without a reset | `409 CONFLICT` | ✅ pass |
+| 66 | `POST /api/campaigns/:id/reset` | Campaign READY, unsuccessful contacts restored | `200 -> READY · restored 3` | ✅ pass |
+| 67 | **DNC contacts survive a reset** | Still `DO_NOT_CALL` | 4 before, 4 after — preserved | ✅ pass |
+| 68 | Campaign runs again after reset | New calls placed | calls `61 → 64` | ✅ pass |
+| 69 | **DNC still never dialled across both runs** | Zero calls to DNC contacts | **0** | ✅ pass |
+| 70 | Invariants after a reset and a second full run | Hold | `PASSED` | ✅ pass |
+
+Row 67 is the one that matters. DNC is a one-way door everywhere else in the system; a reset
+that quietly reopened it would mean the guarantee held right up until someone pressed a button
+labelled "run it again".

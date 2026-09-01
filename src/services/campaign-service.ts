@@ -270,6 +270,62 @@ export class CampaignService {
     return this.#require(id);
   }
 
+  /**
+   * Reset a finished campaign so it can be run again.
+   *
+   * Deliberately distinct from `resume`. Resuming continues a run; this *discards* the
+   * previous run's outcomes and puts unsuccessful contacts back in the pool — which is why
+   * `COMPLETED` is a legal starting point for it even though `COMPLETED -> RUNNING` is not.
+   * Without this, a demo campaign that finished its contacts is inert with no way back
+   * except the command line.
+   *
+   * Contacts marked DO_NOT_CALL are never restored, and neither are contacts already
+   * reached. See `ContactRepository.resetForReplay`.
+   */
+  reset(id: string): { campaign: Campaign; contactsRestored: number } {
+    const campaign = this.#require(id);
+
+    if (this.#engine.isRunning(id)) {
+      throw new ConflictError('Stop the campaign before resetting it', {
+        campaignId: id,
+        status: campaign.status,
+      });
+    }
+    if (campaign.status === 'RUNNING' || campaign.status === 'PAUSED') {
+      throw new ConflictError('Stop the campaign before resetting it', {
+        campaignId: id,
+        status: campaign.status,
+      });
+    }
+
+    const now = this.#clock.now();
+    const contactsRestored = this.#contacts.resetForReplay(id, now);
+
+    // Goes through the state machine, not around it. COMPLETED and FAILED have an explicit
+    // reset-only edge to READY for exactly this (see the campaign transition table) — a raw
+    // status write here would have made the machine a description of some transitions rather
+    // than all of them, which is the property that makes it worth having.
+    const current = this.#require(id);
+    if (current.status !== 'READY' && current.status !== 'DRAFT') {
+      this.#transition(current, 'READY');
+    }
+
+    // A reset also clears an abandon-rate pause: the rate that tripped it was measured
+    // against a run that no longer exists.
+    this.#campaigns.setPredictivePausedReason(id, null, now);
+
+    this.#events.emit({
+      type: 'campaign.stopped',
+      severity: 'warn',
+      message: `Campaign "${campaign.name}" reset for replay — ${contactsRestored} contact(s) restored`,
+      campaignId: id,
+      metadata: { contactsRestored, previousStatus: campaign.status, reset: true },
+    });
+    this.#events.flush();
+
+    return { campaign: this.#require(id), contactsRestored };
+  }
+
   list(): Campaign[] {
     return this.#campaigns.list();
   }

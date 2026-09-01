@@ -14,6 +14,8 @@
  */
 
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 export type SqlValue = string | number | bigint | null | Uint8Array;
 export type SqlRow = Record<string, SqlValue>;
@@ -30,6 +32,14 @@ export class Database {
   #closed = false;
 
   constructor(path: string) {
+    // SQLite will not create a missing parent directory, and its failure message —
+    // "unable to open database file" — says nothing about which file or why. On a fresh
+    // clone `data/` does not exist yet, so without this the very first `npm run dev` fails
+    // with an error that reads like corruption rather than a missing folder (BUG.md B-008).
+    if (path !== ':memory:') {
+      mkdirSync(dirname(path), { recursive: true });
+    }
+
     this.#db = new DatabaseSync(path);
 
     // WAL lets the event writer and the API's readers proceed without blocking each other.

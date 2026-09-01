@@ -33,7 +33,9 @@ export function CampaignDetailView({
   const dialer = metrics.data?.dialer;
   const agentMetrics = metrics.data?.agents;
 
-  const act = (verb: 'start' | 'pause' | 'resume' | 'stop' | 'ready' | 'resume-predictive'): void => {
+  const act = (
+    verb: 'start' | 'pause' | 'resume' | 'stop' | 'ready' | 'resume-predictive' | 'reset',
+  ): void => {
     void action.run(() => api.campaignAction(campaignId, verb), () => {
       detail.reload();
       metrics.reload();
@@ -94,6 +96,16 @@ export function CampaignDetailView({
         {campaign.predictivePausedReason !== null && (
           <button className="btn btn--ok" onClick={() => act('resume-predictive')} disabled={action.pending}>
             Resume predictive dialing
+          </button>
+        )}
+        {(campaign.status === 'COMPLETED' || campaign.status === 'STOPPED' || campaign.status === 'FAILED') && (
+          <button
+            className="btn"
+            title="Put unsuccessful contacts back in the pool and run again. Never restores DO_NOT_CALL contacts, and never re-dials someone already reached."
+            onClick={() => act('reset')}
+            disabled={action.pending}
+          >
+            Reset for replay
           </button>
         )}
         <span style={{ flex: 1 }} />

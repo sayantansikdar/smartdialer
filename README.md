@@ -16,14 +16,27 @@ timeout handling, deterministic simulation, and a live operational dashboard.
 
 ```bash
 npm install
-cp .env.example .env      # optional; the defaults work
-npm run db:migrate
-npm run seed
 npm run dev               # API on :3000, dashboard on :5173
+```
+
+That is genuinely all that is required — the database and its directory are created on first
+start, and migrations run automatically. For the demo dataset (three campaigns, 28 agents, 275
+contacts including do-not-call entries), stop the server and add:
+
+```bash
+npm run seed              # then `npm run dev` again
 ```
 
 Open **http://localhost:5173**, go to **Campaigns**, and press **Start** on
 *Q3 Renewals (Progressive)*.
+
+Optional configuration lives in `.env` (`cp .env.example .env`), loaded natively by Node — no
+`dotenv` dependency. `SIMULATION_SPEED` is the one worth knowing: it defaults to `10`, which
+finishes a campaign in about a minute; `3` is easier to watch.
+
+> Seeding rewrites the database, so it refuses to run while the server is up — the server
+> caches id counters at startup and rows written behind its back would collide (`BUG.md` B-005).
+> The message tells you how to stop it.
 
 ---
 
@@ -89,6 +102,11 @@ picking up to silence. The pacer now solves `Lp + 1.5·√(Lp(1-p)) ≤ seats`, 
 5. **Simulations.** The **Simulation** tab runs any of eight predefined scenarios in an
    isolated engine and reports `INVARIANTS: PASSED/FAILED` along with whether the scenario
    demonstrated what it claims. Same seed ⇒ identical run.
+
+6. **Run it again.** A campaign that works through all its contacts moves to COMPLETED and
+   correctly refuses to restart. Press **Reset** to put the unsuccessful contacts back in the
+   pool and go again — it never restores a `DO_NOT_CALL` contact, and never re-dials someone
+   who was already reached.
 
 Or from the command line:
 

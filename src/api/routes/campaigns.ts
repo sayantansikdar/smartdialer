@@ -116,6 +116,15 @@ export function registerCampaignRoutes(app: FastifyInstance, ctx: ApiContext): v
     campaign: container.campaignService.resumePredictive(parseId(request)),
   }));
 
+  /**
+   * Reset a finished campaign so the demo can be run again without dropping to a terminal.
+   * Never restores DO_NOT_CALL contacts, and never re-dials someone already reached.
+   */
+  app.post('/api/campaigns/:id/reset', async (request) => {
+    const result = container.campaignService.reset(parseId(request));
+    return { campaign: result.campaign, contactsRestored: result.contactsRestored };
+  });
+
   app.get('/api/campaigns/:id/metrics', async (request) => {
     const campaign = container.campaignService.get(parseId(request));
     return {

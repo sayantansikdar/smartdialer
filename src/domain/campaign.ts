@@ -24,9 +24,17 @@ export const DIALING_MODES = ['PROGRESSIVE', 'PREDICTIVE'] as const;
 export type DialingMode = (typeof DIALING_MODES)[number];
 
 /**
- * `STOPPED -> READY` is intentional: it lets a campaign be reset and re-run, which the
- * demo scenarios rely on. `COMPLETED` and `FAILED` are genuinely terminal — a campaign that
- * exhausted its contacts or failed structurally should be inspected, not silently resumed.
+ * A campaign can always be reset back to READY, from any state it has finished in.
+ *
+ * The distinction that matters is between *resuming* and *resetting*. Nothing may go directly
+ * back to RUNNING — a campaign that exhausted its contacts or failed structurally must not
+ * silently pick up where it left off. But an operator may explicitly reset it, which discards
+ * the previous run's outcomes and returns unsuccessful contacts to the pool
+ * (`CampaignService.reset`). READY still requires a deliberate start afterwards.
+ *
+ * `COMPLETED` and `FAILED` remain in `terminal` because that set means "the dialer will not
+ * advance this on its own" — which is still true. Terminal describes automatic progress, not
+ * the absence of every possible edge.
  */
 export const campaignStateMachine = new StateMachine<CampaignStatus>({
   name: 'Campaign',
@@ -37,8 +45,10 @@ export const campaignStateMachine = new StateMachine<CampaignStatus>({
     RUNNING: ['PAUSED', 'STOPPED', 'COMPLETED', 'FAILED'],
     PAUSED: ['RUNNING', 'STOPPED', 'COMPLETED', 'FAILED'],
     STOPPED: ['READY'],
-    COMPLETED: [],
-    FAILED: [],
+    // Reset-only edges: explicit operator action, never automatic, and never straight to
+    // RUNNING. See CampaignService.reset.
+    COMPLETED: ['READY'],
+    FAILED: ['READY'],
   },
   terminal: ['COMPLETED', 'FAILED'],
 });

@@ -13,10 +13,12 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const { loadConfig } = await import('../src/config/index.ts');
+const { assertServerNotRunning } = await import('./guard-running-server.mjs');
 const { createContainer, DEFAULT_PROVIDER_ID } = await import('../src/container.ts');
 const { SeededRandom } = await import('../src/core/rng.ts');
 
 const config = loadConfig();
+await assertServerNotRunning('seed');
 if (config.databasePath !== ':memory:') {
   mkdirSync(dirname(config.databasePath), { recursive: true });
 }

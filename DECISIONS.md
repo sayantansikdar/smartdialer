@@ -158,7 +158,7 @@ to run, inspect and debug, that last property matters more than it sounds.
 and constructor parameter properties are unavailable — code using them typechecks fine and
 then fails at runtime. Mitigated by setting `erasableSyntaxOnly: true`, which turns that
 runtime failure into a compile error. Relative imports must carry an explicit `.ts`
-extension. Requires Node ≥22.6 for the flag-free behaviour.
+extension. Requires Node ≥22.12 (Vite 8 / Rolldown dependency engine floor and native type stripping).
 
 **Consequences.** Union types plus `const` objects replace enums throughout the domain
 model (which is better practice anyway — the values are plain strings in the database).

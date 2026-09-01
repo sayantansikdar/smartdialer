@@ -109,8 +109,10 @@ export const api = {
   createCampaign: (body: unknown) => post<{ campaign: Campaign }>('/api/campaigns', body),
   updateCampaign: (id: string, body: unknown) =>
     patch<{ campaign: Campaign }>(`/api/campaigns/${id}`, body),
-  campaignAction: (id: string, action: 'ready' | 'start' | 'pause' | 'resume' | 'stop' | 'resume-predictive') =>
-    post<{ campaign: Campaign }>(`/api/campaigns/${id}/${action}`),
+  campaignAction: (
+    id: string,
+    action: 'ready' | 'start' | 'pause' | 'resume' | 'stop' | 'resume-predictive' | 'reset',
+  ) => post<{ campaign: Campaign; contactsRestored?: number }>(`/api/campaigns/${id}/${action}`),
 
   contacts: (filter: { campaignId?: string; status?: string; query?: string; limit?: number }) =>
     get<{ contacts: Contact[] }>(`/api/contacts${query(filter)}`),

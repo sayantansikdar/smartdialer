@@ -19,6 +19,11 @@ Backend and dashboard are both finished and verified end to end.
   engine with both pacing strategies; events, metrics and invariants; REST API and SSE; the
   simulation engine with eight scenarios; seed data; and the nine-view React dashboard.
 * **471 tests across 20 files**, all passing in ~6s. Typecheck (backend and web) and lint clean.
+* **A fresh clone needs only `npm install && npm run dev`.** The database directory and the
+  migrations are created on first start; `db:migrate` and `seed` are conveniences, not
+  prerequisites (B-008).
+* **Configuration is loaded from `.env`** via Node's native `--env-file-if-exists` on every
+  entry point (B-007). Before that fix the file the README told users to create did nothing.
 * **`npm run verify`** runs the entire checklist — typecheck, lint, all six test suites, the
   production build, migrations, seeding and all eight scenarios — in about 19 seconds, exiting
   non-zero on any failure. Its ability to *fail* is itself verified (`TEST_CHECKLIST.md` row 55).
@@ -106,6 +111,11 @@ Do not re-derive these; they were checked directly on this machine.
 * **Browser automation only exercises paths someone thought to click.** The frontend test suite
   found a routing bug (B-006) on its first run, in a thirty-line module that the browser checks
   had already "verified". The two kinds of test are not substitutes.
+* **Three bugs were found by *running* the app rather than testing it** — B-005 (restart id
+  collision), B-006 (trailing-slash route), B-007 (`.env` never loaded). All three lived in the
+  seam between a well-tested component and the way a real user reaches it. Perfectly isolated
+  units cannot cover those seams; `npm run verify`'s migrate/seed/build steps exist for exactly
+  this reason.
 
 ---
 
@@ -164,5 +174,37 @@ Remaining:     Nothing required.
 Broken:        Nothing known.
 Watch out for: CI is dormant until the project is split into its own repo — `npm run verify`
                is the working equivalent today.
+Next:          Nothing outstanding.
+```
+
+### 2026-09-01 — Session 6 (made it completely runnable)
+
+```
+Done:          Cold-start tested from a clean copy and fixed what it exposed. B-008: a fresh
+               clone could not start because `data/` did not exist — the Database now creates
+               it, so `npm install && npm run dev` is now genuinely all that is required.
+               B-009: a COMPLETED campaign was a dead end — added reset (API + UI) that
+               restores unsuccessful contacts but never DNC and never the already-reached.
+               Actionable messages for port-in-use and the safety refusal. Guarded seed and
+               db:reset against running behind a live server. 478 tests; verify 19/19.
+Remaining:     Nothing required.
+Broken:        Nothing known.
+Watch out for: Reset must never restore DO_NOT_CALL. That is the highest-value assertion in
+               tests/failure/campaign-reset.test.ts — do not weaken it.
+Next:          Nothing outstanding.
+```
+
+### 2026-09-01 — Session 5 (ran the app)
+
+```
+Done:          Launched with `npm run dev` and drove it in a browser. Found and fixed B-007 —
+               the `.env` the README tells you to create was never read, so every setting in
+               it was silently ignored. Fixed with Node's native --env-file-if-exists on all
+               six entry points; no dependency added. Confirmed the safety gate still refuses
+               SIMULATION_MODE=false through the newly-live path.
+Remaining:     Nothing required.
+Broken:        Nothing known. verify: 19/19 in 17.7s.
+Watch out for: Seeded campaigns have finite contacts — a COMPLETED one will not restart. Run
+               `npm run db:reset && npm run seed` for a fresh demo.
 Next:          Nothing outstanding.
 ```
