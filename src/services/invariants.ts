@@ -151,6 +151,19 @@ export class InvariantChecker {
     }
   }
 
+  /**
+   * Note on what "provider concurrency" means here.
+   *
+   * This checks our own ledger against the configured provider ceiling. It is deliberately
+   * *not* the same quantity as the mock provider's internal `maxConcurrentCalls`: a call holds
+   * its lease while `provider.createCall()` is still awaiting acceptance, so the ledger reads
+   * one higher than the provider's own count during handover, and drops back when the
+   * provider accepts or refuses.
+   *
+   * That window is bounded at one because the engine dials sequentially within a tick. If
+   * dialing ever became concurrent within a tick, this note stops being true and the bound
+   * becomes the concurrency of that loop.
+   */
   #checkProviderConcurrency(report: ReportFn): void {
     const max = this.#concurrency.providerMax;
     for (const [providerId, active] of Object.entries(this.#calls.activeCountByProvider())) {

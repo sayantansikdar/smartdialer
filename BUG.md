@@ -612,9 +612,10 @@ problem this system most needs to report accurately.
 
 ---
 
-## B-015 — Predictive pacing abandons too much with long talk times — OPEN
+## B-015 — Predictive pacing abandoned too much with long talk times
 
-**Status:** OPEN, characterised, contained
+**Status:** ROOT CAUSE FIXED. A residual weakness at very low answer rates remains, newly
+characterised below.
 
 **Observed behavior.** With 180-second talk times and a 70% answer rate (`pacing-c`), the
 campaign abandons around 20% of answered calls before the safety control latches and stops it.
@@ -636,15 +637,72 @@ accounts for calls in flight but not for the *rate at which seats become free*, 
 calls is close to zero. Short-call scenarios do not show the problem because seats recycle fast
 enough to absorb the error.
 
-**What I would do about it.** Model time-to-next-free-seat from observed handle time and treat
-capacity as a forecast over the ring window, rather than an instantaneous count. That is a real
-change to the pacing model and I would not want to make it without a way to evaluate it, which
-is what the `pacing-a`..`pacing-d` scenarios now provide.
+### Root cause, found later
 
-**Why it is recorded rather than hidden.** The scenario expectations assert the safety
-properties — limits respected, invariants intact, control engaged — and deliberately do *not*
-assert a low abandon rate, because that would be loosening a test until it passed. See
-`src/sim/scenarios.ts`.
+Not a modelling subtlety at all — an arithmetic bug feeding the pacer a **negative** number.
+
+Instrumenting the plans immediately before the first abandonment showed:
+
+```
+t      avail  pending   req -> app   verdict
+114964     1      -19    20 -> 10    REDUCED
+116358     3      -13    16 -> 10    REDUCED
+```
+
+`pendingConnections` was negative. The pacer *subtracts* it, so a value of −19 silently **added
+nineteen lines of phantom capacity**: with one free agent, ten calls were approved.
+
+Three faults compounded:
+
+1. **`buildSnapshot` computed `pendingConnections` as `ledgerActiveCalls − connectedCalls`** —
+   two different sources subtracted from each other. The first came from the concurrency
+   ledger, the second from the in-flight map. Nothing kept them in step.
+2. **The concurrency lease TTL was `providerTimeoutMs * 2` = 90 seconds**, shorter than a
+   180-second conversation. Every long call had its slot reclaimed *mid-conversation*. This is
+   B-012's mistake repeated: I fixed the watchdog to distinguish setup from conversation and
+   did not fix the lease that backs it.
+3. **Reclaiming a lease released the slot but left the call in `#inFlight`** — so the ledger
+   dropped while the in-flight map did not, driving the subtraction negative.
+
+### Fix
+
+* Lease TTL is now `(providerTimeoutMs + maxCallDurationMs) * 2`, so the backstop outlives the
+  longest call its watchdog would tolerate.
+* Reclaiming a lease now settles the call. Releasing a slot while leaving the call alive was
+  the ledger/database divergence the invariant checker exists to catch.
+* `pendingConnections` is derived from the in-flight map alone, and clamped at zero. A count
+  of things in flight has no meaningful negative value.
+
+### Result
+
+| scenario | before | after |
+|---|---|---|
+| `pacing-b` | 35 connected · 5.4% abandon · 62% util | **269 · 0.4% · 84.5%** |
+| `pacing-c` | 24 connected · 22.6% abandon · 54% util | **189 · 0.0% · 94.1%** |
+| `pacing-d` | 36 connected · 5.3% abandon · 67% util | **142 · 0.0% · 84.2%** |
+
+Roughly eight times the throughput at a fraction of the abandonment.
+
+### What remains, and what it is not
+
+`pacing-a` (20% answer rate) and `agent-drop` still abandon 13–26%. Two things are now known
+about that which were not before:
+
+* **It is not the variance guard.** Sweeping `safetyBufferSigmas` from 1.5 to 3.0 changes those
+  two scenarios by *exactly nothing* — identical connections, utilisation and abandon rate at
+  every value. The guard is not the binding constraint there, so tuning it is pointless.
+* **It is worst where the over-dial is largest.** A 20% answer rate implies dialing ~5x, which
+  is where the absolute number of simultaneous answers is greatest and the pacer's
+  instantaneous view of free seats is least representative of the seats that will exist four
+  seconds later when the batch is answered.
+
+The next thing to try is the time-to-free-seat model — treating capacity as a forecast over the
+ring window rather than an instantaneous count. The `pacing-*` scenarios are the harness for
+evaluating it.
+
+**Why the expectations do not assert a low abandon rate.** They assert the safety properties —
+limits respected, invariants intact, control engaged — because loosening a bound until it
+passes would hide precisely this. See `src/sim/scenarios.ts`.
 
 ---
 
@@ -671,3 +729,74 @@ Both were correct improvements and neither was the bottleneck. Only profiling th
 operations found it. Worth remembering the next time a performance hypothesis feels obvious.
 
 The curve is still superlinear (205× for 60×) — `SCALE.md` names what is next and why.
+
+---
+
+## B-017 — A campaign with no agents online spun forever
+
+**Status:** FIXED
+
+**Observed behavior.** Taking the last agent offline mid-campaign produced, in a single test
+run:
+
+```
+safety.denied   : 200,004 events
+virtual clock   : 50,001 s
+real time       : 8,741 ms   (stopped only by the run's real-time guard)
+campaign status : RUNNING
+```
+
+The campaign ticked forever, denying every dial, doing nothing.
+
+**Expected behavior.** A campaign that provably cannot dial stands down and waits for the
+condition to change.
+
+**Reproduction.** Start a campaign, take every agent offline, let it run.
+
+**Root cause.** B-003 introduced a stand-down for campaigns blocked by something requiring
+deliberate operator action, and enumerated exactly two such conditions: an abandon-rate pause
+and the emergency stop. "Every agent is offline" is the same kind of condition — nothing the
+engine does will change it — but it was not in the list, so the campaign kept ticking.
+
+**Affected components.** `src/services/dialer-engine.ts`.
+
+**Fix.** Added "no agents are online" to the stand-down conditions, and subscribed the engine
+to `agent.available` so an agent returning revives a stood-down campaign. That second half
+matters as much as the first: a stand-down with no way back is a worse bug than the spinning
+it replaced.
+
+**Regression test.** `tests/failure/stand-down.test.ts` — asserts the campaign stands down, that
+the event count stays small rather than exploding, and that bringing an agent back resumes
+dialing.
+
+**Verification.** Same scenario after the fix: **2 ms**, 23 denials, 6 s of virtual time,
+`stalled: true`. Bringing the agent back online resumed dialing immediately.
+
+**Note for the future.** This is the third time the same shape has appeared: a campaign that
+cannot proceed burning cycles instead of standing down. The condition list in `tick` is worth
+treating as a checklist whenever a new blocking condition is introduced — "can the engine
+itself ever clear this?" If not, it belongs in the stand-down.
+
+---
+
+## B-018 — Every scenario was measuring the mock provider's capacity, not the pacer
+
+**Status:** FIXED
+
+**Observed behavior.** Peak concurrency pinned at ~41 in every predictive scenario, regardless
+of team size or campaign limit. A probe at 20, 40 and 80 agents produced peak concurrency of
+41, 41 and 41.
+
+**Root cause.** `SimulationService` scaled `GLOBAL_MAX_CONCURRENT_CALLS` and
+`PROVIDER_MAX_CONCURRENT_CALLS` to the scenario, but not `MockProviderConfig.maxConcurrentCalls`
+— the mock provider's *own* internal capacity, which defaults to 40. A campaign configured for
+60 concurrent calls silently got 40, and the provider's rejections looked like ordinary
+backpressure.
+
+**Fix.** The simulation now gives the provider at least twice the campaign's limit unless the
+scenario deliberately constrains it.
+
+**Note.** This had been *masking* B-015: the 40-call ceiling limited the over-dial and therefore
+the abandonment. Lifting it made `pacing-a` visibly worse (13% → 26%) — the cap was hiding the
+problem, not solving it, and a scenario that measures the provider's ceiling instead of the
+pacer measures nothing worth knowing.

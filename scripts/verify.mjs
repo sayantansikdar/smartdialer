@@ -43,10 +43,11 @@ if (!quick) {
 
   // The scenarios are the highest-value check: each asserts both that its invariants held and
   // that it actually demonstrated the behaviour it claims.
-  for (const scenario of [
-    'progressive', 'predictive', 'predictive-small-team', 'provider-fail',
-    'timeout', 'emergency-stop', 'dnc', 'race',
-  ]) {
+  // Read the scenario list from the source of truth rather than duplicating it here. The
+  // hardcoded copy had gone stale: five scenarios added for the assignment's pacing table were
+  // never being verified.
+  const { scenarioNames } = await import('../src/sim/scenarios.ts');
+  for (const scenario of scenarioNames()) {
     steps.push({
       name: `scenario: ${scenario}`,
       cmd: 'node',
