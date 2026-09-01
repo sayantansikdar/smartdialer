@@ -13,7 +13,7 @@ const { loadConfig } = await import('../src/config/index.ts');
 const { assertServerNotRunning } = await import('./guard-running-server.mjs');
 
 const config = loadConfig();
-await assertServerNotRunning('reset the database');
+await assertServerNotRunning('reset the database', config.databasePath);
 if (config.databasePath === ':memory:') {
   console.log('DATABASE_PATH is :memory: — nothing to reset.');
   process.exit(0);

@@ -315,7 +315,9 @@ export class MockTelecomProvider implements TelecomProvider {
           this.#active.delete(call.providerCallId);
         }
 
-        this.#emit({
+        // Routed through `deliver` so a subclass can make delivery unreliable — duplicated,
+        // reordered — without knowing anything about the lifecycle that produced the event.
+        this.deliver({
           type,
           providerCallId: call.providerCallId,
           callId: call.callId,
@@ -330,7 +332,14 @@ export class MockTelecomProvider implements TelecomProvider {
     call.timers.push(handle);
   }
 
-  #emit(event: ProviderEvent): void {
+  /**
+   * Hand an event to every subscriber.
+   *
+   * `protected` on purpose: it is the seam where delivery can be made unreliable.
+   * `UnreliableMockTelecomProvider` overrides it to duplicate and reorder events, which is
+   * what gives the engine's idempotency and ordering tolerance something real to survive.
+   */
+  protected deliver(event: ProviderEvent): void {
     for (const handler of [...this.#handlers]) handler(event);
   }
 

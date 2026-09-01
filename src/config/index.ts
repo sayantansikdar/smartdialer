@@ -59,6 +59,7 @@ const EnvSchema = z.object({
   DEFAULT_RETRY_MAX_DELAY_MS: positiveInt.default(30_000),
   DEFAULT_RETRY_MULTIPLIER: z.coerce.number().min(1).default(2),
   PROVIDER_TIMEOUT_MS: positiveInt.default(45_000),
+  MAX_CALL_DURATION_MS: positiveInt.default(30 * 60_000),
   ABANDON_TIMEOUT_MS: positiveInt.default(2000),
   DIALER_TICK_INTERVAL_MS: positiveInt.default(250),
 
@@ -97,6 +98,14 @@ export interface AppConfig {
     readonly retryMaxDelayMs: number;
     readonly retryMultiplier: number;
     readonly providerTimeoutMs: number;
+    /**
+     * Ceiling on a *connected* conversation, distinct from the setup timeout.
+     *
+     * A call that is talking is not a call the provider has gone silent on. Measuring both
+     * against `providerTimeoutMs` killed every conversation longer than 45 seconds
+     * (BUG.md B-012).
+     */
+    readonly maxCallDurationMs: number;
     readonly abandonTimeoutMs: number;
     readonly tickIntervalMs: number;
   };
@@ -170,6 +179,12 @@ export function loadConfig(env: EnvSource = process.env): AppConfig {
         `DEFAULT_RETRY_MAX_DELAY_MS (${raw.DEFAULT_RETRY_MAX_DELAY_MS})`,
     );
   }
+  if (raw.MAX_CALL_DURATION_MS <= raw.PROVIDER_TIMEOUT_MS) {
+    problems.push(
+      `MAX_CALL_DURATION_MS (${raw.MAX_CALL_DURATION_MS}) must exceed PROVIDER_TIMEOUT_MS ` +
+        `(${raw.PROVIDER_TIMEOUT_MS}) — a conversation may legitimately outlast call setup`,
+    );
+  }
   if (raw.ABANDON_TIMEOUT_MS >= raw.PROVIDER_TIMEOUT_MS) {
     // If a call could be "abandoned" only after the provider watchdog already fired, the
     // abandon-rate control could never observe anything and would silently do nothing.
@@ -217,6 +232,7 @@ export function loadConfig(env: EnvSource = process.env): AppConfig {
       retryMaxDelayMs: raw.DEFAULT_RETRY_MAX_DELAY_MS,
       retryMultiplier: raw.DEFAULT_RETRY_MULTIPLIER,
       providerTimeoutMs: raw.PROVIDER_TIMEOUT_MS,
+      maxCallDurationMs: raw.MAX_CALL_DURATION_MS,
       abandonTimeoutMs: raw.ABANDON_TIMEOUT_MS,
       tickIntervalMs: raw.DIALER_TICK_INTERVAL_MS,
     },

@@ -500,3 +500,174 @@ DO_NOT_CALL contact", which resets and then runs a **second full campaign** befo
 `callsToDoNotCallContacts()` is still empty.
 
 **Verification.** All 7 pass; `npm run verify` green at 19/19.
+
+---
+
+## B-010 — Three duplicate ANSWERED events reserved three agents for one call
+
+**Status:** FIXED
+
+**Observed behavior.** The assignment asks directly: *"the provider sends ANSWERED, ANSWERED,
+ANSWERED, COMPLETED — does your system create multiple state transitions?"* It did. Three
+deliveries of the same event pulled three agents out of the pool for one conversation; two of
+them were never spoken to.
+
+**Root cause.** Two layers, and the top one ignored the bottom. `#transitionCall` used a
+compare-and-set and correctly refused the duplicate — but returned `void`, so
+`#handleAnswered` had no way to know, and carried straight on to reserve an agent. The
+idempotency existed and was thrown away one line later.
+
+A second instance of the same shape in `#settle`: it set `settled = true` and released the
+concurrency lease *before* checking that the terminal transition was legal. A stale
+out-of-order event (a `NO_ANSWER` for a call that had since connected) therefore released the
+slot while leaving the call row active — the in-memory ledger silently disagreeing with the
+database, which is B-001's failure mode reappearing in a different path.
+
+**Fix.** `#transitionCall` returns whether it applied, and `#handleAnswered` returns early
+when it did not. `#settle` verifies the transition is reachable *before* committing to settle,
+and ignores the event otherwise. Terminal states reachable from everywhere (TIMEOUT,
+CANCELLED) stay always-legal so the watchdog and stop paths can never be blocked by the check.
+
+**Regression test.** `tests/failure/event-integrity.test.ts` — 6 tests, including replaying a
+captured ANSWERED twice and asserting the agent count does not move, and a full campaign
+against a provider that duplicates and reorders at random.
+
+**Note.** There is deliberately no de-duplication layer and no event-id bookkeeping.
+Idempotency falls out of the transition being conditional, which is why it also covers
+duplicates nobody anticipated.
+
+---
+
+## B-011 — The reported abandon rate was 0% while 29 people were abandoned
+
+**Status:** FIXED
+
+**Observed behavior.** A scenario report showing `Abandoned 29` and `Abandon rate 0.0%` in the
+same block.
+
+**Root cause.** `abandoned / answered`. An abandoned call *was* answered — a person picked up
+— but it carries `outcome = 'ABANDONED'`, so it was excluded from its own denominator. When
+every answered call was abandoned, `answered` was zero and the rate read 0%.
+
+**Fix.** Denominator is `answered + abandoned` — everyone who picked up.
+
+**Note.** The rolling window the *safety control* reads was already correct, so the control
+itself was never fooled. What was broken was the number a **human** reads to decide whether
+the system is behaving — which for a compliance metric is arguably worse.
+
+---
+
+## B-012 — The watchdog killed every conversation longer than 45 seconds
+
+**Status:** FIXED
+
+**Observed behavior.** Scenarios with 120s and 180s talk times produced 60 timeouts and
+**zero** successful connections, against a provider configured to answer 70% of calls.
+
+**Root cause.** One watchdog, armed at call creation, covering the whole lifecycle, measured
+against `PROVIDER_TIMEOUT_MS` (45s). A conversation is silent — nothing is emitted while two
+people talk — so every call longer than the setup timeout was declared a provider failure.
+
+Invisible until now because the default simulated talk time is 25 seconds. The assignment's
+own scenario table exposed it on the first run.
+
+**Fix.** Two phases, two timeouts. Setup (`created → answered`) keeps `PROVIDER_TIMEOUT_MS`;
+the conversation phase gets a new `MAX_CALL_DURATION_MS` (30 min), and the watchdog is re-armed
+when the call connects. Startup validation rejects a configuration where the call ceiling does
+not exceed the setup timeout.
+
+---
+
+## B-013 — The abandon-rate control fired 13 abandons too late
+
+**Status:** FIXED
+
+**Observed behavior.** In the 70%-answer-rate scenario, abandonment began at t=121,494 and the
+control did not latch until t=143,876 — 22 seconds and 13 abandoned people later.
+
+**Root cause.** `abandonMinSample: 20`. The control waited for twenty answered calls before it
+would act, which is a strange thing to require of a metric where every sample is a person
+hearing silence.
+
+**Fix.** Act on the **Wilson score interval's lower bound** instead — the most optimistic rate
+still consistent with what has been observed. 3 abandons out of 5 gives a lower bound around
+23%, enough to act on immediately; 1 out of 5 gives about 4%, and the control correctly waits.
+It reacts fast when the evidence is strong and stays quiet when it is not, which a fixed
+minimum sample cannot do. Abandonment in the affected scenarios roughly halved.
+
+---
+
+## B-014 — Every abandonment was logged twice
+
+**Status:** FIXED
+
+**Observed behavior.** `call.abandoned` events appeared in exact pairs — 26 events for 13
+abandonments.
+
+**Root cause.** `#abandon` emitted the event explicitly, and `#settle` emitted it again via
+`EVENT_FOR_OUTCOME`.
+
+**Fix.** Removed the explicit emission. Small, but it doubled the apparent size of the one
+problem this system most needs to report accurately.
+
+---
+
+## B-015 — Predictive pacing abandons too much with long talk times — OPEN
+
+**Status:** OPEN, characterised, contained
+
+**Observed behavior.** With 180-second talk times and a 70% answer rate (`pacing-c`), the
+campaign abandons around 20% of answered calls before the safety control latches and stops it.
+`pacing-a` shows ~13%.
+
+**What is not wrong.** Every limit holds; invariants pass at every step; the abandon-rate
+control detects the condition, latches a durable pause and stands the campaign down awaiting a
+human. The *guarantee* is intact — this is a failure of the *guess*.
+
+**What I ruled out, by measurement rather than reasoning.** Raising the pacer's variance guard
+from 1.5σ to 2.0σ: no measurable change. Adding an independent variance bound in the Safety
+Controller: no change, because the pacer's own bound was already tighter and binding first.
+Neither hypothesis survived contact with the numbers.
+
+**Current best explanation.** The pacer treats *currently free seats* as its capacity, but with
+180-second calls the seats free when a batch is dialled are not the seats free four seconds
+later when it is answered — other in-flight calls claim them first. `pendingConnections`
+accounts for calls in flight but not for the *rate at which seats become free*, which with long
+calls is close to zero. Short-call scenarios do not show the problem because seats recycle fast
+enough to absorb the error.
+
+**What I would do about it.** Model time-to-next-free-seat from observed handle time and treat
+capacity as a forecast over the ring window, rather than an instantaneous count. That is a real
+change to the pacing model and I would not want to make it without a way to evaluate it, which
+is what the `pacing-a`..`pacing-d` scenarios now provide.
+
+**Why it is recorded rather than hidden.** The scenario expectations assert the safety
+properties — limits respected, invariants intact, control engaged — and deliberately do *not*
+assert a low abandon rate, because that would be loosening a test until it passed. See
+`src/sim/scenarios.ts`.
+
+---
+
+## B-016 — The contact-reservation query sorted the whole campaign, per dial attempt
+
+**Status:** FIXED
+
+**Observed behavior.** `npm run load`: 60× the agents cost 243× per tick. At 3,000 agents
+utilisation collapsed to 6%.
+
+**Root cause.** `reserveNext` orders by `(next_attempt_at, id)`. Every freshly imported contact
+has `next_attempt_at = NULL`, so they all compare equal and the index — which stopped at
+`next_attempt_at` — could not satisfy the tiebreak. SQLite fell back to `USE TEMP B-TREE FOR
+ORDER BY` and sorted **every dialable contact in the campaign** to pick one row, once per dial
+attempt.
+
+**Fix.** `migrations/002` extends the index to `(campaign_id, status, next_attempt_at, id)`,
+making it a covering-index lookup. Measured: 722 µs → **17.9 µs** at 1,500 agents, and flat —
+the same cost at 1,500 as at 200.
+
+**Note on how it was found.** Two earlier "fixes" moved the number by nothing at all: replacing
+an O(n) in-memory scan with a counter, and removing a redundant `CASE` from the same ORDER BY.
+Both were correct improvements and neither was the bottleneck. Only profiling the individual
+operations found it. Worth remembering the next time a performance hypothesis feels obvious.
+
+The curve is still superlinear (205× for 60×) — `SCALE.md` names what is next and why.

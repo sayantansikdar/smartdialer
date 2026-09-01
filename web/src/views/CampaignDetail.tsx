@@ -147,14 +147,44 @@ export function CampaignDetailView({
               <Empty>The campaign is not ticking. Start it to see live pacing decisions.</Empty>
             ) : (
               <>
-                <div style={{ marginBottom: 10, fontSize: 13 }}>
-                  Most recent plan requested{' '}
-                  <strong className="mono" style={{ color: 'var(--accent)' }}>
-                    {dialer.lastPlan.attempts}
-                  </strong>{' '}
-                  dial{dialer.lastPlan.attempts === 1 ? '' : 's'}.
+                {/*
+                  Both numbers, deliberately. The pacing engine's request and the Safety
+                  Controller's verdict are separate facts, and showing only the final count
+                  would hide exactly the thing the separation exists to make visible.
+                */}
+                <div style={{ marginBottom: 10, fontSize: 13, display: 'flex', gap: 18, alignItems: 'center' }}>
+                  <span>
+                    Pacing engine requested{' '}
+                    <strong className="mono" style={{ color: 'var(--text-dim)' }}>
+                      {dialer.lastPlan.requested}
+                    </strong>
+                  </span>
+                  <span style={{ color: 'var(--text-faint)' }}>→</span>
+                  <span>
+                    Safety controller approved{' '}
+                    <strong className="mono" style={{ color: 'var(--accent)' }}>
+                      {dialer.lastPlan.approved}
+                    </strong>
+                  </span>
+                  <Badge status={dialer.lastPlan.verdict} />
+                </div>
+
+                <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-faint)', margin: '10px 0 5px' }}>
+                  Pacing engine reasoning
                 </div>
                 <pre className="reasoning">{dialer.lastPlan.reasoning.join('\n')}</pre>
+
+                <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-faint)', margin: '12px 0 5px' }}>
+                  Safety controller decision
+                </div>
+                <pre className="reasoning">
+                  {[
+                    dialer.lastPlan.safety,
+                    ...dialer.lastPlan.reductions.map(
+                      (r) => `  ${r.control}: ${r.from} -> ${r.to} (ceiling ${r.ceiling})`,
+                    ),
+                  ].join('\n')}
+                </pre>
               </>
             )}
           </Card>

@@ -174,3 +174,69 @@ ordered by `(dueTime, insertionSeq)`. What varies is only how it is advanced:
 The consequence worth internalising: **the dashboard and the test suite drive the same
 engine along the same code path.** A green simulation test is evidence about the behaviour
 a user will see, not about a parallel test-only implementation.
+
+---
+
+## State machines, and how they map to the brief
+
+The assignment lists state names and says *"you don't have to use these exact states, but you
+should have something equivalent"*. The mapping is one-to-one except where noted.
+
+### Agent
+
+| Brief | This system | Note |
+|---|---|---|
+| OFFLINE | `OFFLINE` | |
+| AVAILABLE | `AVAILABLE` | The only state from which an agent can be reserved |
+| RESERVED | `RESERVED` | Earmarked for a call in flight that has not connected |
+| DIALING | `RINGING` | Same state, named for what the agent hears |
+| CONNECTED | `ON_CALL` | |
+| WRAP_UP | `WRAP_UP` | |
+| PAUSED | `PAUSED` | |
+
+```
+OFFLINE ──▶ AVAILABLE ──▶ RESERVED ──▶ RINGING ──▶ ON_CALL ──▶ WRAP_UP ──▶ AVAILABLE
+                 ▲            │           │           │            │
+                 └────────────┴───────────┴───────────┴────────────┘
+                        every occupied state can return to AVAILABLE
+```
+
+That last property is deliberate: a call can fail at any point, and an agent stranded in
+`RESERVED` is a permanently lost seat.
+
+**"Two workers see the same available agent. Both must not reserve it."**
+`AgentRepository.reserveAvailable` is a conditional update:
+
+```sql
+UPDATE agents SET status='RESERVED', current_call_id=?
+ WHERE id=? AND status='AVAILABLE'
+```
+
+Exactly one caller gets `changes === 1`; the loser gets `0` and moves on. The preceding
+`SELECT` is only a candidate hint — correctness comes entirely from the `AND status=`
+predicate. There is no lock, no transaction, and no read-then-write window, because the read
+does not decide anything.
+
+### Call
+
+| Brief | This system | Note |
+|---|---|---|
+| QUEUED | `CREATED` → `QUEUED` | Split: created in the database, then queued for the provider |
+| RESERVED | *(on the contact)* | Reservation is a property of the borrower, not the call |
+| INITIATED | `DIALING` | |
+| RINGING | `RINGING` | |
+| ANSWERED | `CONNECTED` | Merged with CONNECTED — see below |
+| CONNECTED | `CONNECTED` | |
+| COMPLETED | `ENDED` | |
+| FAILED | `FAILED` | Plus `NO_ANSWER`, `BUSY`, `TIMEOUT` as distinct outcomes |
+| CANCELLED | `CANCELLED` | |
+
+ANSWERED and CONNECTED are one state on purpose. Splitting them would create a window where a
+call is answered but not yet attached to an agent — and *that window is exactly what
+abandonment is*. Modelling it as a state would invite code to treat it as normal. Instead an
+answered call with no free agent goes on an explicit `#awaitingAgent` queue with an abandon
+timer running, which is a much harder thing to overlook.
+
+`NO_ANSWER`, `BUSY` and `TIMEOUT` are separate terminal states rather than variants of FAILED
+because the retry classifier treats them differently, and collapsing them would lose the
+distinction the retry policy depends on.

@@ -55,6 +55,13 @@ against real time, scaled (the live dashboard, 1×–100×). The dashboard and t
 therefore drive *the same engine along the same code path* — a green simulation test is
 evidence about what you will see on screen, not about a parallel test-only implementation.
 
+**The pacing engine never places a call.** It produces a *request* — "I think we can start 15
+more calls" — and has no reference to anything that could act on it. A separate
+`SafetyController` decides what is actually permitted, and can approve, reduce, reject, or
+**fall back to progressive behaviour** when the predictive estimate stops being trustworthy.
+A component that both computes an aggressive number and enforces the bound on it has no bound
+(D-018).
+
 **Reserve before you dial, release exactly once.** A contact is claimed with an atomic
 conditional `UPDATE`; a concurrency lease is acquired synchronously across three scopes before
 the provider is ever called; and leases are idempotent objects, so a double release is a no-op
@@ -79,6 +86,8 @@ picking up to silence. The pacer now solves `Lp + 1.5·√(Lp(1-p)) ≤ seats`, 
 | `BUG.md` | Bugs found, root causes, regression tests |
 | `TEST_CHECKLIST.md` | Executable verification with real recorded output |
 | `ROLLBACK.md` | How to undo things safely |
+| `SCALE.md` | What breaks first at 100 → 1,000 → 10,000 agents, measured |
+| `ANSWER.md` | The assignment's final question |
 
 ## The demo, in five minutes
 
@@ -157,7 +166,8 @@ the first.
 ## Testing
 
 ```bash
-npm run verify             # everything below, plus build + all 8 scenarios, in ~19s
+npm run verify             # everything below, plus build + all 13 scenarios
+npm run load               # scaling measurement — see SCALE.md
 ```
 
 Or individually:

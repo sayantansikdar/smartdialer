@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PredictiveDialer, DEFAULT_PREDICTIVE_TUNING } from '../../src/dialer/predictive.ts';
 import { ProgressiveDialer } from '../../src/dialer/progressive.ts';
-import { applyLimits, type DialerSnapshot } from '../../src/dialer/strategy.ts';
+import type { DialerSnapshot } from '../../src/dialer/strategy.ts';
 import { makeCampaign } from '../helpers/fixtures.ts';
 
 /** A snapshot with every limit wide open, so a test can constrain exactly one thing. */
@@ -29,54 +29,17 @@ function snapshot(overrides: Partial<DialerSnapshot> = {}): DialerSnapshot {
   };
 }
 
-describe('applyLimits', () => {
-  it('passes a plan through when nothing binds', () => {
-    const reasoning: string[] = [];
-    expect(applyLimits(5, snapshot(), reasoning)).toBe(5);
-    expect(reasoning).toEqual([]);
-  });
-
-  it('applies the tightest limit and names it', () => {
-    const reasoning: string[] = [];
-    const attempts = applyLimits(10, snapshot({ campaignHeadroom: 3 }), reasoning);
-    expect(attempts).toBe(3);
-    expect(reasoning.join(' ')).toContain('campaign concurrency headroom');
-  });
-
-  it('applies every limit, not just the first that binds', () => {
-    const reasoning: string[] = [];
-    const attempts = applyLimits(
-      100,
-      snapshot({ campaignHeadroom: 20, globalHeadroom: 10, rateLimitHeadroom: 4, remainingContacts: 2 }),
-      reasoning,
-    );
-    expect(attempts).toBe(2);
-    // Each clamp that actually bit should be recorded, so the dashboard can explain the number.
-    expect(reasoning.length).toBe(4);
-  });
-
-  it('never returns a negative count', () => {
-    expect(applyLimits(-5, snapshot(), [])).toBe(0);
-    expect(applyLimits(5, snapshot({ globalHeadroom: -3 }), [])).toBe(0);
-  });
-
-  it('floors fractional desires rather than rounding up', () => {
-    // Rounding up would let a plan exceed a limit by one on every tick.
-    expect(applyLimits(4.9, snapshot(), [])).toBe(4);
-  });
-});
-
 describe('ProgressiveDialer', () => {
   const dialer = new ProgressiveDialer();
 
   it('dials one line per free agent', () => {
-    expect(dialer.computeDialPlan(snapshot({ availableAgents: 3 })).attempts).toBe(3);
+    expect(dialer.computeDialPlan(snapshot({ availableAgents: 3 })).requested).toBe(3);
   });
 
   it('never dials with no free agents', () => {
     // The defining guarantee of progressive mode: every answered call has someone waiting.
     const plan = dialer.computeDialPlan(snapshot({ availableAgents: 0 }));
-    expect(plan.attempts).toBe(0);
+    expect(plan.requested).toBe(0);
     expect(plan.reasoning.join(' ')).toContain('no spare agent capacity');
   });
 
@@ -85,10 +48,10 @@ describe('ProgressiveDialer', () => {
     // is the single easiest way to turn a progressive dialer into an accidental predictive
     // one: dial again, both answer, and one caller hears silence.
     expect(
-      dialer.computeDialPlan(snapshot({ availableAgents: 5, pendingConnections: 3 })).attempts,
+      dialer.computeDialPlan(snapshot({ availableAgents: 5, pendingConnections: 3 })).requested,
     ).toBe(2);
     expect(
-      dialer.computeDialPlan(snapshot({ availableAgents: 5, pendingConnections: 5 })).attempts,
+      dialer.computeDialPlan(snapshot({ availableAgents: 5, pendingConnections: 5 })).requested,
     ).toBe(0);
   });
 
@@ -96,23 +59,26 @@ describe('ProgressiveDialer', () => {
     const campaign = makeCampaign({
       safety: { ...makeCampaign().safety, lineRatio: 0.5 },
     });
-    expect(dialer.computeDialPlan(snapshot({ campaign, availableAgents: 10 })).attempts).toBe(5);
+    expect(dialer.computeDialPlan(snapshot({ campaign, availableAgents: 10 })).requested).toBe(5);
   });
 
   it('honours a lineRatio above one for a deliberate mild over-dial', () => {
     const campaign = makeCampaign({
       safety: { ...makeCampaign().safety, lineRatio: 2 },
     });
-    expect(dialer.computeDialPlan(snapshot({ campaign, availableAgents: 4 })).attempts).toBe(8);
+    expect(dialer.computeDialPlan(snapshot({ campaign, availableAgents: 4 })).requested).toBe(8);
   });
 
-  it('is bounded by hard limits', () => {
+  it('ignores concurrency limits — bounding the request is not its job', () => {
+    // The pacer asks for what agent capacity warrants and stops. Applying the ceilings here
+    // as well would put the bound inside the component it is supposed to bound
+    // (DECISIONS.md D-018); SafetyController is what cuts this down.
     expect(
-      dialer.computeDialPlan(snapshot({ availableAgents: 10, campaignHeadroom: 2 })).attempts,
-    ).toBe(2);
+      dialer.computeDialPlan(snapshot({ availableAgents: 10, campaignHeadroom: 2 })).requested,
+    ).toBe(10);
     expect(
-      dialer.computeDialPlan(snapshot({ availableAgents: 10, remainingContacts: 1 })).attempts,
-    ).toBe(1);
+      dialer.computeDialPlan(snapshot({ availableAgents: 10, remainingContacts: 1 })).requested,
+    ).toBe(10);
   });
 
   it('ignores the answer rate entirely', () => {
@@ -124,8 +90,8 @@ describe('ProgressiveDialer', () => {
     const high = dialer.computeDialPlan(
       snapshot({ availableAgents: 4, historicalAnswerRate: 0.95, recentAnswerRate: 0.95 }),
     );
-    expect(low.attempts).toBe(4);
-    expect(high.attempts).toBe(4);
+    expect(low.requested).toBe(4);
+    expect(high.requested).toBe(4);
   });
 
   it('explains its arithmetic', () => {
@@ -361,7 +327,7 @@ describe('PredictiveDialer — the whole plan', () => {
         recentAnswerRate: 0.5,
       }),
     );
-    expect(plan.attempts).toBeGreaterThan(20);
+    expect(plan.requested).toBeGreaterThan(20);
   });
 
   it('does not over-dial a small team', () => {
@@ -375,16 +341,16 @@ describe('PredictiveDialer — the whole plan', () => {
         recentAnswerRate: 0.5,
       }),
     );
-    expect(plan.attempts).toBeLessThanOrEqual(7);
+    expect(plan.requested).toBeLessThanOrEqual(7);
   });
 
   it('refuses to dial with no free agents', () => {
     const plan = dialer.computeDialPlan(snapshot({ campaign, availableAgents: 0 }));
-    expect(plan.attempts).toBe(0);
+    expect(plan.requested).toBe(0);
     expect(plan.reasoning.join(' ')).toContain('at least one free seat');
   });
 
-  it('respects maxLinesPerAgent', () => {
+  it('does not apply maxLinesPerAgent — that ceiling belongs to the controller', () => {
     const strict = makeCampaign({
       dialingMode: 'PREDICTIVE',
       safety: { ...makeCampaign().safety, maxLinesPerAgent: 1 },
@@ -399,8 +365,10 @@ describe('PredictiveDialer — the whole plan', () => {
         recentAnswerRate: 0.2,
       }),
     );
-    expect(plan.attempts).toBeLessThanOrEqual(50);
-    expect(plan.reasoning.join(' ')).toContain('maxLinesPerAgent');
+    // The variance guard still restrains it — that is the pacer being conservative on its own
+    // account, which is different from enforcing a safety limit.
+    expect(plan.requested).toBeGreaterThan(50);
+    expect(plan.reasoning.join(' ')).toContain('sigma safety buffer');
   });
 
   it('subtracts calls already in flight', () => {
@@ -416,38 +384,26 @@ describe('PredictiveDialer — the whole plan', () => {
         pendingConnections: 5,
       }),
     );
-    expect(base.attempts - withFlight.attempts).toBe(5);
+    expect(base.requested - withFlight.requested).toBe(5);
   });
 
   it('returns zero when calls in flight already meet the target', () => {
     const plan = dialer.computeDialPlan(
       snapshot({ campaign, availableAgents: 2, totalAgents: 20, pendingConnections: 100 }),
     );
-    expect(plan.attempts).toBe(0);
+    expect(plan.requested).toBe(0);
     expect(plan.reasoning.join(' ')).toContain('target already met');
   });
 
-  it('stays within every hard ceiling', () => {
-    const plan = dialer.computeDialPlan(
-      snapshot({
-        campaign,
-        totalAgents: 100,
-        availableAgents: 100,
-        recentSample: 500,
-        historicalAnswerRate: 0.1,
-        recentAnswerRate: 0.1,
-        campaignHeadroom: 7,
-      }),
-    );
-    expect(plan.attempts).toBe(7);
-  });
-
-  it('cannot ask for anything when a hard limit is zero', () => {
+  it('asks freely regardless of the concurrency ceilings', () => {
+    // Deliberate. A pacer that reads the ceilings would be enforcing them, and a component
+    // that enforces its own bound has no bound. Every one of these is applied downstream by
+    // SafetyController — see tests/unit/safety-controller.test.ts.
     for (const limit of ['campaignHeadroom', 'globalHeadroom', 'providerHeadroom', 'rateLimitHeadroom', 'remainingContacts'] as const) {
       const plan = dialer.computeDialPlan(
         snapshot({ campaign, availableAgents: 20, totalAgents: 20, recentSample: 200, [limit]: 0 }),
       );
-      expect(plan.attempts, limit).toBe(0);
+      expect(plan.requested, limit).toBeGreaterThan(0);
     }
   });
 
@@ -467,7 +423,7 @@ describe('PredictiveDialer — the whole plan', () => {
     const a = dialer.computeDialPlan(input);
     const b = dialer.computeDialPlan(input);
     expect(JSON.stringify(input)).toBe(frozen);
-    expect(a.attempts).toBe(b.attempts);
+    expect(a.requested).toBe(b.requested);
   });
 });
 
@@ -485,8 +441,8 @@ describe('Progressive vs predictive', () => {
         historicalAnswerRate: 0.5,
         recentAnswerRate: 0.5,
       });
-      const progressive = new ProgressiveDialer().computeDialPlan(base).attempts;
-      const predictive = new PredictiveDialer().computeDialPlan(base).attempts;
+      const progressive = new ProgressiveDialer().computeDialPlan(base).requested;
+      const predictive = new PredictiveDialer().computeDialPlan(base).requested;
       expect(predictive, `agents=${availableAgents}`).toBeGreaterThanOrEqual(progressive);
     }
   });

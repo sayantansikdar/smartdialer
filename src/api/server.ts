@@ -127,6 +127,10 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
     simulationMode: container.config.simulationMode,
     providerDriver: container.config.providerDriver,
     virtualTime: container.clock.now(),
+    // Which database this process has open. Reported so the seed and reset scripts can tell
+    // whether they are about to write behind a *running* server's back, rather than refusing
+    // whenever any server happens to be listening.
+    databasePath: container.config.databasePath,
   }));
 
   registerCampaignRoutes(app, context);

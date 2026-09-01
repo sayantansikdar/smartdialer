@@ -85,7 +85,15 @@ export interface DialerState {
   inFlight: number;
   awaitingAgent: number;
   snapshot: DialerSnapshot | null;
-  lastPlan: { attempts: number; reasoning: string[]; at: number } | null;
+  lastPlan: {
+    requested: number;
+    approved: number;
+    verdict: 'APPROVED' | 'REDUCED' | 'REJECTED' | 'FALLBACK_PROGRESSIVE';
+    reasoning: string[];
+    safety: string;
+    reductions: Array<{ control: string; ceiling: number; from: number; to: number }>;
+    at: number;
+  } | null;
 }
 
 export interface DialerSnapshot {

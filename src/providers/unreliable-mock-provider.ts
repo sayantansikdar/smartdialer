@@ -25,7 +25,7 @@ import {
   type MockProviderConfig,
   type MockProviderOptions,
 } from './mock-provider.ts';
-import type { ProviderCallHandle, ProviderCallRequest } from './telecom-provider.ts';
+import type { ProviderCallHandle, ProviderCallRequest, ProviderEvent } from './telecom-provider.ts';
 
 export const DEFAULT_UNRELIABLE_CONFIG: MockProviderConfig = {
   ...DEFAULT_MOCK_CONFIG,
@@ -48,6 +48,28 @@ export interface UnreliableBehaviourConfig {
   readonly recoveryChance: number;
   /** Multiplier range applied to accept latency while degraded. */
   readonly maxLatencyMultiplier: number;
+
+  /**
+   * Chance that any given lifecycle event is delivered more than once.
+   *
+   * Real carriers retry webhooks they believe failed, so the same ANSWERED can arrive three
+   * times. A dialer that treats each delivery as a fresh transition will reserve three
+   * agents for one call — which is why the assignment asks about this specifically.
+   */
+  readonly duplicateEventChance: number;
+  /** How many extra copies a duplicated event produces. */
+  readonly maxDuplicates: number;
+
+  /**
+   * Chance that an event is delayed past the one after it, arriving out of order.
+   *
+   * Webhooks travel over independent connections; there is no ordering guarantee. COMPLETED
+   * can genuinely arrive before ANSWERED, and a state machine that assumes otherwise will
+   * either crash or, worse, walk backwards.
+   */
+  readonly outOfOrderChance: number;
+  /** Virtual ms an out-of-order event is delayed by. */
+  readonly reorderDelayMs: number;
 }
 
 export const DEFAULT_UNRELIABLE_BEHAVIOUR: UnreliableBehaviourConfig = {
@@ -55,6 +77,10 @@ export const DEFAULT_UNRELIABLE_BEHAVIOUR: UnreliableBehaviourConfig = {
   outageChance: 0.05,
   recoveryChance: 0.5,
   maxLatencyMultiplier: 6,
+  duplicateEventChance: 0.15,
+  maxDuplicates: 2,
+  outOfOrderChance: 0.1,
+  reorderDelayMs: 900,
 };
 
 export interface UnreliableMockProviderOptions extends MockProviderOptions {
@@ -69,6 +95,8 @@ export class UnreliableMockTelecomProvider extends MockTelecomProvider {
   #latencyMultiplier = 1;
   #outageEnteredAt: number | null = null;
   #outageCount = 0;
+  #duplicates = 0;
+  #reordered = 0;
 
   constructor(options: UnreliableMockProviderOptions) {
     super({
@@ -140,11 +168,59 @@ export class UnreliableMockTelecomProvider extends MockTelecomProvider {
     });
   }
 
+  /**
+   * Deliver an event unreliably: possibly duplicated, possibly late enough to arrive after
+   * the event that follows it.
+   *
+   * This is the whole point of the second provider. The engine must be idempotent and
+   * order-tolerant, and neither property is actually tested unless something can break it.
+   * Both draws come from the seeded fault stream, so a run that exposes a bug reproduces.
+   */
+  protected override deliver(event: ProviderEvent): void {
+    const faults = this.rng(RNG_STREAMS.providerFaultInjection);
+
+    if (faults.bool(this.#behaviour.outOfOrderChance)) {
+      // Delayed rather than dropped: the event still arrives, just after its successor.
+      this.#reordered += 1;
+      this.clock.setTimer(
+        this.#behaviour.reorderDelayMs,
+        () => this.#emitWithDuplicates(event, faults.bool(this.#behaviour.duplicateEventChance)),
+        `${this.id}:reordered:${event.type}`,
+      );
+      return;
+    }
+
+    this.#emitWithDuplicates(event, faults.bool(this.#behaviour.duplicateEventChance));
+  }
+
+  #emitWithDuplicates(event: ProviderEvent, duplicate: boolean): void {
+    super.deliver(event);
+    if (!duplicate) return;
+
+    const copies = this.rng(RNG_STREAMS.providerFaultInjection).int(1, this.#behaviour.maxDuplicates + 1);
+    this.#duplicates += copies;
+    for (let i = 0; i < copies; i += 1) {
+      // Byte-identical redelivery, exactly as a retried webhook would be.
+      super.deliver(event);
+    }
+  }
+
+  /** Counters surfaced in the provider view, so the chaos is visible rather than mysterious. */
+  get duplicatesSent(): number {
+    return this.#duplicates;
+  }
+
+  get reorderedEvents(): number {
+    return this.#reordered;
+  }
+
   override reset(): void {
     super.reset();
     this.#nextWeatherCheckAt = 0;
     this.#latencyMultiplier = 1;
     this.#outageEnteredAt = null;
     this.#outageCount = 0;
+    this.#duplicates = 0;
+    this.#reordered = 0;
   }
 }

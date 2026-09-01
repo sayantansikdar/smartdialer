@@ -117,6 +117,175 @@ export const SCENARIOS: readonly Scenario[] = [
       return problems;
     },
   },
+  // ---------------------------------------------------------------------------
+  // The assignment's pacing table. Same team, same limits, same seed — only the answer rate
+  // and talk time change, so the differences in the reports are attributable to pacing and
+  // nothing else. That is the point: "why did the system decide to make this many calls
+  // right now?" is only answerable if everything else is held still.
+  // ---------------------------------------------------------------------------
+  {
+    name: 'pacing-a',
+    demonstrates:
+      'Scenario A — 20% answer rate, 120s talk time. A low answer rate justifies the most aggressive over-dial, and the variance guard is what keeps it honest.',
+    config: {
+      scenario: 'pacing-a',
+      dialingMode: 'PREDICTIVE',
+      agents: 20,
+      contacts: 300,
+      seed: 1001,
+      maxConcurrentCalls: 60,
+      maxLinesPerAgent: 4,
+      provider: {
+        answerRate: 0.2, noAnswerRate: 0.5, busyRate: 0.2, failureRate: 0.1,
+        meanCallDurationMs: 120_000,
+      },
+    },
+    expect: (report) => {
+      const problems: string[] = [];
+      // A 20% answer rate is where predictive earns its keep: ~5 lines per seat in theory.
+      if (report.peakConcurrency <= 20) {
+        problems.push(`peak ${report.peakConcurrency} never exceeded 20 agents; no over-dial at a 20% answer rate`);
+      }
+      if (report.peakConcurrency > 60) problems.push(`peak ${report.peakConcurrency} breached the limit of 60`);
+      // The abandon rate is NOT asserted at a low value here, and that is deliberate rather
+      // than convenient: these long-talk-time scenarios currently abandon more than they
+      // should, the control catches it, and the honest record of that is BUG.md B-015 rather
+      // than an expectation quietly loosened until it passes.
+      if (report.invariantViolations.length > 0) problems.push('invariants broke');
+      return problems;
+    },
+  },
+  {
+    name: 'pacing-b',
+    demonstrates:
+      'Scenario B — 50% answer rate, 90s talk time. The middle case: moderate over-dial, high agent utilisation.',
+    config: {
+      scenario: 'pacing-b',
+      dialingMode: 'PREDICTIVE',
+      agents: 20,
+      contacts: 300,
+      seed: 1001,
+      maxConcurrentCalls: 60,
+      maxLinesPerAgent: 4,
+      provider: {
+        answerRate: 0.5, noAnswerRate: 0.3, busyRate: 0.15, failureRate: 0.05,
+        meanCallDurationMs: 90_000,
+      },
+    },
+    expect: (report) => {
+      const problems: string[] = [];
+      if (report.peakConcurrency <= 20) problems.push(`peak ${report.peakConcurrency} shows no over-dial`);
+      if (report.agentUtilization < 0.4) {
+        problems.push(`agent utilisation ${(report.agentUtilization * 100).toFixed(0)}% is poor for a 50% answer rate`);
+      }
+      if (report.invariantViolations.length > 0) problems.push('invariants broke');
+      return problems;
+    },
+  },
+  {
+    name: 'pacing-c',
+    demonstrates:
+      'Scenario C — 70% answer rate, 180s talk time. A high answer rate leaves little room to over-dial, and long calls mean seats free slowly; correct behaviour here is restraint.',
+    config: {
+      scenario: 'pacing-c',
+      dialingMode: 'PREDICTIVE',
+      agents: 20,
+      contacts: 300,
+      seed: 1001,
+      maxConcurrentCalls: 60,
+      maxLinesPerAgent: 4,
+      provider: {
+        answerRate: 0.7, noAnswerRate: 0.2, busyRate: 0.07, failureRate: 0.03,
+        meanCallDurationMs: 180_000,
+      },
+    },
+    expect: (report) => {
+      const problems: string[] = [];
+      // The interesting assertion is the ceiling, not the floor. At a 70% answer rate the
+      // safe over-dial is small, and a pacer that ignored that would abandon people.
+      if (report.peakConcurrency > 45) {
+        problems.push(`peak ${report.peakConcurrency} is too aggressive when 70% of calls answer`);
+      }
+      // This is the worst case for abandonment in the whole suite (B-015). What must hold is
+      // that the control *notices*: a run this bad has to end with predictive paused, not
+      // with the dialer cheerfully continuing.
+      if (report.abandoned > 0 && report.safetyInterventions === 0) {
+        problems.push('calls were abandoned and no safety control intervened');
+      }
+      if (report.invariantViolations.length > 0) problems.push('invariants broke');
+      return problems;
+    },
+  },
+  {
+    name: 'pacing-d',
+    demonstrates:
+      'Scenario D — the answer rate collapses from 70% to 10% mid-run. This is the case the assignment asks about directly: how does the system protect itself when the estimate it was betting on stops being true?',
+    config: {
+      scenario: 'pacing-d',
+      dialingMode: 'PREDICTIVE',
+      agents: 20,
+      contacts: 400,
+      seed: 1001,
+      maxConcurrentCalls: 60,
+      maxLinesPerAgent: 4,
+      provider: {
+        answerRate: 0.7, noAnswerRate: 0.2, busyRate: 0.07, failureRate: 0.03,
+        meanCallDurationMs: 90_000,
+      },
+      providerShift: {
+        atVirtualMs: 120_000,
+        provider: {
+          answerRate: 0.1, noAnswerRate: 0.6, busyRate: 0.2, failureRate: 0.1,
+          meanCallDurationMs: 180_000,
+        },
+      },
+    },
+    expect: (report) => {
+      const problems: string[] = [];
+      // The shift is a trap for a naive pacer: the answer rate falls, so `agents / rate` asks
+      // for far more lines — right as the calls that DO connect start lasting twice as long.
+      // Surviving the collapse without breaching a limit is the test.
+      if (report.peakConcurrency > 60) {
+        problems.push(`peak ${report.peakConcurrency} breached the campaign limit of 60`);
+      }
+      if (report.successfulConnections < 20) {
+        problems.push(`only ${report.successfulConnections} connections; the system over-corrected into doing nothing`);
+      }
+      if (report.invariantViolations.length > 0) problems.push('invariants broke');
+      return problems;
+    },
+  },
+  {
+    name: 'agent-drop',
+    demonstrates:
+      'Agent availability collapses mid-run — 30 of 40 agents go offline at once. The dialer must shed pacing within a tick or two rather than dialing into capacity that no longer exists.',
+    config: {
+      scenario: 'agent-drop',
+      dialingMode: 'PREDICTIVE',
+      agents: 40,
+      contacts: 400,
+      seed: 2024,
+      maxConcurrentCalls: 80,
+      maxLinesPerAgent: 3,
+      agentDrop: { atVirtualMs: 90_000, count: 30 },
+      provider: {
+        answerRate: 0.5, noAnswerRate: 0.3, busyRate: 0.15, failureRate: 0.05,
+        meanCallDurationMs: 60_000,
+      },
+    },
+    expect: (report) => {
+      const problems: string[] = [];
+      // Losing three quarters of the agents while calls are in flight is the sharpest test of
+      // whether pacing reads live capacity or a cached number.
+      if (report.abandonRate > 0.08) {
+        problems.push(`abandon rate ${(report.abandonRate * 100).toFixed(1)}% — the dialer kept dialing into agents that had gone`);
+      }
+      if (report.invariantViolations.length > 0) {
+        problems.push('invariants broke when capacity collapsed');
+      }
+      return problems;
+    },
+  },
   {
     name: 'provider-fail',
     demonstrates:

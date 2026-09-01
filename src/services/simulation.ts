@@ -49,6 +49,24 @@ export interface SimulationConfig {
   readonly contactsWithPriorAttempts: number;
   /** Safety valve for a run that cannot settle. */
   readonly maxVirtualMs: number;
+
+  /**
+   * Take agents offline part-way through the run.
+   *
+   * The assignment asks: "100 agents are available and 40 disappear within a few seconds —
+   * how quickly does the dialer react?" Without a way to actually remove agents mid-run there
+   * is no way to answer that with evidence rather than assertion.
+   */
+  readonly agentDrop?: { readonly atVirtualMs: number; readonly count: number } | undefined;
+
+  /**
+   * Change provider behaviour part-way through, for the assignment's scenario D — an answer
+   * rate and talk time that shift underneath a running campaign, which is the case that
+   * actually exercises the pacer's feedback loops rather than its steady state.
+   */
+  readonly providerShift?:
+    | { readonly atVirtualMs: number; readonly provider: Partial<MockProviderConfig> }
+    | undefined;
 }
 
 export const DEFAULT_SIMULATION_CONFIG: SimulationConfig = {
@@ -68,6 +86,8 @@ export const DEFAULT_SIMULATION_CONFIG: SimulationConfig = {
   dncContacts: 0,
   contactsWithPriorAttempts: 0,
   maxVirtualMs: 30 * 60_000,
+  agentDrop: undefined,
+  providerShift: undefined,
 };
 
 export interface SimulationReport {
@@ -266,6 +286,52 @@ export class SimulationService {
     let stopReason: string;
     try {
       container.campaignService.start(campaignId);
+
+      // Mid-run disruptions, scheduled on the same virtual clock as everything else so they
+      // land at a reproducible moment rather than whenever the CPU got round to them.
+      if (config.agentDrop !== undefined) {
+        const drop = config.agentDrop;
+        container.clock.setTimer(
+          drop.atVirtualMs,
+          () => {
+            // Take the *available* seats first: that is the disruption that actually hurts,
+            // because it removes capacity the pacer has already counted on.
+            const online = container.agentService
+              .listByCampaign(campaignId)
+              .filter((a) => a.status === 'AVAILABLE' || a.status === 'PAUSED')
+              .slice(0, drop.count);
+            for (const agent of online) container.agentService.setStatus(agent.id, 'OFFLINE');
+            container.events.emit({
+              type: 'agent.offline',
+              severity: 'warn',
+              message: `${online.length} agent(s) went offline`,
+              campaignId,
+              metadata: { dropped: online.length, requested: drop.count },
+            });
+            container.events.flush();
+          },
+          'sim:agent-drop',
+        );
+      }
+
+      if (config.providerShift !== undefined) {
+        const shift = config.providerShift;
+        container.clock.setTimer(
+          shift.atVirtualMs,
+          () => {
+            container.providers.getMock(DEFAULT_PROVIDER_ID).updateConfig(shift.provider);
+            container.events.emit({
+              type: 'provider.fault_injected',
+              severity: 'warn',
+              message: 'Provider behaviour shifted mid-run',
+              campaignId,
+              metadata: { ...shift.provider },
+            });
+            container.events.flush();
+          },
+          'sim:provider-shift',
+        );
+      }
 
       stopReason = 'completed';
       if (config.speed <= 0) {

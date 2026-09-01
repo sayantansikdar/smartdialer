@@ -18,7 +18,7 @@ const { createContainer, DEFAULT_PROVIDER_ID } = await import('../src/container.
 const { SeededRandom } = await import('../src/core/rng.ts');
 
 const config = loadConfig();
-await assertServerNotRunning('seed');
+await assertServerNotRunning('seed', config.databasePath);
 if (config.databasePath !== ':memory:') {
   mkdirSync(dirname(config.databasePath), { recursive: true });
 }

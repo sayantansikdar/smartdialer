@@ -150,6 +150,32 @@ export class MetricsService {
     return { rate: window?.rate ?? 0, sample: window?.sample ?? 0 };
   }
 
+  /**
+   * A pessimistic view of the abandon rate, for the safety control.
+   *
+   * The plain rate needs a large sample before it means anything, and "wait for 20 samples"
+   * is a strange thing to say about a metric where every sample is a person picking up the
+   * phone to silence. So the control acts on the **lower bound of the Wilson score interval**
+   * instead: the most optimistic rate still consistent with what has been observed. When even
+   * that exceeds the threshold, the evidence is sufficient regardless of sample size.
+   *
+   * Concretely: 3 abandons out of 5 answered gives a Wilson lower bound around 23% — enough
+   * to act on immediately. 1 out of 5 gives around 4%, which is not, and the control
+   * correctly waits. It reacts fast when the problem is real and stays quiet when it is not,
+   * which a fixed minimum sample cannot do (BUG.md B-013).
+   */
+  abandonRateLowerBound(campaignId: string, confidenceZ = 1.96): { rate: number; sample: number } {
+    const { rate, sample } = this.abandonRate(campaignId);
+    if (sample === 0) return { rate: 0, sample: 0 };
+
+    const z2 = confidenceZ * confidenceZ;
+    const denominator = 1 + z2 / sample;
+    const centre = rate + z2 / (2 * sample);
+    const margin =
+      confidenceZ * Math.sqrt((rate * (1 - rate)) / sample + z2 / (4 * sample * sample));
+    return { rate: Math.max(0, (centre - margin) / denominator), sample };
+  }
+
   abandonRate(campaignId: string): { rate: number; sample: number } {
     const window = this.#abandonWindows.get(campaignId);
     return { rate: window?.rate ?? 0, sample: window?.sample ?? 0 };
@@ -194,7 +220,14 @@ export class MetricsService {
       busyRate: rate(outcomes['BUSY'] ?? 0),
       failureRate: rate((outcomes['FAILED'] ?? 0) + (outcomes['TIMEOUT'] ?? 0)),
       // Over answered calls, for the reason given on `recordOutcome`.
-      abandonRate: stats.answered === 0 ? 0 : stats.abandoned / stats.answered,
+      // Denominator is everyone who picked up, which includes the abandoned calls. Dividing
+      // by `answered` alone excluded the very calls being counted: a campaign where every
+      // answered call was abandoned reported 0%, because `answered` was zero (BUG.md B-011).
+      // This is the number a human reads to judge whether the system is behaving safely.
+      abandonRate:
+        stats.answered + stats.abandoned === 0
+          ? 0
+          : stats.abandoned / (stats.answered + stats.abandoned),
       averageTalkMs: stats.averageTalkMs,
       retriesScheduled: eventCounts['retry.scheduled'] ?? 0,
     };

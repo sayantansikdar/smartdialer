@@ -15,7 +15,6 @@
  */
 
 import type { DialerSnapshot, DialerStrategy, DialPlan } from './strategy.ts';
-import { applyLimits } from './strategy.ts';
 
 export class ProgressiveDialer implements DialerStrategy {
   readonly mode = 'PROGRESSIVE' as const;
@@ -36,11 +35,10 @@ export class ProgressiveDialer implements DialerStrategy {
 
     if (desired <= 0) {
       reasoning.push('no spare agent capacity; waiting for a call to resolve');
-      return { attempts: 0, reasoning };
+      return { requested: 0, reasoning };
     }
 
-    const attempts = applyLimits(desired, snapshot, reasoning);
-    if (attempts === 0) reasoning.push('a hard limit reduced the plan to zero');
-    return { attempts, reasoning };
+    // Requested, not decided. The SafetyController applies every ceiling.
+    return { requested: desired, reasoning };
   }
 }

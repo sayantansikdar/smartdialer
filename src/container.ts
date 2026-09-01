@@ -42,6 +42,7 @@ import { RateLimiterRegistry } from './services/rate-limiter.ts';
 import { RetryService } from './services/retry.ts';
 import { SafetyEngine } from './services/safety.ts';
 import { SystemService } from './services/system-service.ts';
+import { RecoveryService, type RecoveryReport } from './services/recovery.ts';
 
 /** The default provider every seeded campaign uses. */
 export const DEFAULT_PROVIDER_ID = 'mock-provider';
@@ -85,6 +86,9 @@ export interface Container {
   readonly metrics: MetricsService;
   readonly events: EventService;
   readonly system: SystemService;
+  readonly recovery: RecoveryService;
+  /** What a previous process left behind, reconciled at startup. */
+  readonly recoveryReport: RecoveryReport;
   readonly agentService: AgentService;
   readonly contactService: ContactService;
   readonly engine: DialerEngine;
@@ -224,6 +228,23 @@ export function createContainer(options: ContainerOptions): Container {
     config,
   });
 
+  /**
+   * Reconcile before anything else can read state.
+   *
+   * A restart inherits whatever the previous process was mid-way through. Recovering here —
+   * after the repositories exist, before the engine or the API can observe anything — means
+   * no component ever sees the orphaned state, rather than each having to tolerate it.
+   */
+  const recovery = new RecoveryService({
+    calls: repositories.calls,
+    contacts: repositories.contacts,
+    agents: repositories.agents,
+    events,
+    clock,
+    logger,
+  });
+  const recoveryReport = recovery.recover();
+
   const invariants = new InvariantChecker({
     campaigns: repositories.campaigns,
     contacts: repositories.contacts,
@@ -252,6 +273,8 @@ export function createContainer(options: ContainerOptions): Container {
     metrics,
     events,
     system,
+    recovery,
+    recoveryReport,
     agentService,
     contactService,
     engine,

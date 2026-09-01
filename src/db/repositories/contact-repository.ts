@@ -94,10 +94,13 @@ export class ContactRepository {
          AND status = 'READY'
          AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
          ${exclusion}
-       ORDER BY
-         CASE WHEN next_attempt_at IS NULL THEN 0 ELSE 1 END,
-         next_attempt_at ASC,
-         id ASC
+       -- NULLs first is what we want (never-attempted contacts before those waiting out a
+       -- backoff), and SQLite already sorts NULL below every value in ASC. An explicit
+       -- CASE expression here achieved the same ordering but defeated the index: the query
+       -- plan degraded to USE TEMP B-TREE FOR ORDER BY, sorting every dialable contact in
+       -- the campaign on every single dial attempt. That was the system's scaling
+       -- bottleneck — 712us per reservation at 1500 agents (BUG.md B-016, SCALE.md).
+       ORDER BY next_attempt_at ASC, id ASC
        LIMIT 1`,
       campaignId,
       now,
@@ -300,6 +303,29 @@ export class ContactRepository {
       now,
       campaignId,
     ).changes;
+  }
+
+  /**
+   * Contacts held mid-flight with no call row to explain it.
+   *
+   * These are the ones a crash between reserving a contact and creating its call leaves
+   * behind — a narrow window, and precisely the one the assignment's worker-crash case
+   * describes. Without this sweep they are unreachable forever: not READY, so never
+   * selected, and with no call whose completion would release them.
+   */
+  listStranded(limit = 500): Contact[] {
+    return this.#db
+      .all(
+        `SELECT ${COLUMNS} FROM contacts c
+         WHERE c.status IN ('RESERVED', 'DIALING', 'RINGING', 'CONNECTED')
+           AND NOT EXISTS (
+             SELECT 1 FROM calls WHERE calls.contact_id = c.id
+               AND calls.status NOT IN ('ENDED','NO_ANSWER','BUSY','FAILED','CANCELLED','TIMEOUT')
+           )
+         ORDER BY id ASC LIMIT ?`,
+        limit,
+      )
+      .map(mapRow);
   }
 
   markDoNotCall(id: string, now: number): void {

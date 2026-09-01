@@ -31,7 +31,7 @@
  */
 
 import type { DialerSnapshot, DialerStrategy, DialPlan } from './strategy.ts';
-import { applyLimits, pct } from './strategy.ts';
+import { pct } from './strategy.ts';
 
 export interface PredictiveTuning {
   /**
@@ -102,7 +102,7 @@ export class PredictiveDialer implements DialerStrategy {
 
     if (snapshot.availableAgents <= 0) {
       reasoning.push('no available agents; predictive pacing requires at least one free seat');
-      return { attempts: 0, reasoning };
+      return { requested: 0, reasoning };
     }
 
     const answerRate = this.estimateAnswerRate(snapshot, reasoning);
@@ -140,17 +140,6 @@ export class PredictiveDialer implements DialerStrategy {
       desired = varianceCapped;
     }
 
-    // The per-agent ceiling is applied here as well as in the safety engine. Not redundant:
-    // clamping in the plan means the dashboard shows an honest target rather than a number
-    // that would be silently refused call by call.
-    const ceiling = Math.floor(snapshot.availableAgents * campaign.safety.maxLinesPerAgent);
-    if (desired > ceiling) {
-      reasoning.push(
-        `clamped to ${ceiling} by maxLinesPerAgent ${campaign.safety.maxLinesPerAgent}`,
-      );
-      desired = ceiling;
-    }
-
     desired -= snapshot.pendingConnections;
     reasoning.push(
       `minus ${snapshot.pendingConnections} call(s) already in flight = ${Math.max(0, desired)}`,
@@ -158,12 +147,14 @@ export class PredictiveDialer implements DialerStrategy {
 
     if (desired <= 0) {
       reasoning.push('target already met by calls in flight');
-      return { attempts: 0, reasoning };
+      return { requested: 0, reasoning };
     }
 
-    const attempts = applyLimits(desired, snapshot, reasoning);
-    if (attempts === 0) reasoning.push('a hard limit reduced the plan to zero');
-    return { attempts, reasoning };
+    // Requested, not decided. `maxLinesPerAgent` and every concurrency ceiling are applied by
+    // the SafetyController, which this class has no reference to and cannot influence. The
+    // variance guard above is the pacer being conservative on its own account; it is not a
+    // safety limit and must not be mistaken for one.
+    return { requested: desired, reasoning };
   }
 
   /**

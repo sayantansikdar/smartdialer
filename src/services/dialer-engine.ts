@@ -47,6 +47,11 @@ import type { Contact, ContactStatus } from '../domain/contact.ts';
 import { ProgressiveDialer } from '../dialer/progressive.ts';
 import { PredictiveDialer } from '../dialer/predictive.ts';
 import type { DialerSnapshot, DialerStrategy, DialPlan } from '../dialer/strategy.ts';
+import {
+  SafetyController,
+  type SafetyControllerContext,
+  type SafetyControllerDecision,
+} from '../dialer/safety-controller.ts';
 import type { ProviderEvent, TelecomProvider } from '../providers/telecom-provider.ts';
 import { AgentService } from './agent-service.ts';
 import type { ConcurrencyService, Lease } from './concurrency.ts';
@@ -110,6 +115,12 @@ export interface TickResult {
 export class DialerEngine {
   readonly #options: DialerEngineOptions;
   readonly #strategies: Record<Campaign['dialingMode'], DialerStrategy>;
+  /**
+   * The Safety Controller sits between the pacing engines and the allocator. It is the only
+   * component that can turn a pacing *request* into an approved call count — the engines
+   * below have no reference to it and no way to bypass it.
+   */
+  readonly #safetyController: SafetyController;
 
   /** Live call contexts, keyed by our call id. */
   readonly #inFlight = new Map<string, CallContext>();
@@ -128,13 +139,26 @@ export class DialerEngine {
    */
   readonly #stalled = new Set<string>();
   /**
+   * Calls in flight that have not yet connected, counted per campaign.
+   *
+   * Maintained incrementally rather than derived by scanning `#inFlight`, because the derived
+   * version was the system's scaling bottleneck: it is needed once per dial attempt, and with
+   * N attempts against N in-flight calls that is O(N^2) work every tick. Measured at 60x the
+   * agents, per-tick cost grew 243x (SCALE.md, BUG.md B-016).
+   *
+   * The three places this changes are the three places a call enters flight, connects, or
+   * leaves — kept adjacent to those transitions so the counter cannot drift unnoticed, and
+   * cross-checked by `#assertPendingConsistent` under test.
+   */
+  readonly #pendingByCampaign = new Map<string, number>();
+  /**
    * The most recent dial plan per campaign, kept purely for observability.
    *
    * The plan's `reasoning` is the honest answer to "why is the dialer placing this many
    * calls?", and it is worth surfacing live rather than only in a simulation report — that
    * question is exactly what an operator watching an idle-looking campaign is asking.
    */
-  readonly #lastPlan = new Map<string, { plan: DialPlan; at: number }>();
+  readonly #lastPlan = new Map<string, { plan: DialPlan; decision: SafetyControllerDecision; at: number }>();
 
   constructor(options: DialerEngineOptions) {
     this.#options = options;
@@ -144,6 +168,7 @@ export class DialerEngine {
         minAnswerRate: options.config.predictive.minAnswerRate,
       }),
     };
+    this.#safetyController = new SafetyController();
 
     // Releasing the emergency stop must actually bring stalled campaigns back, or the
     // control would be one-way in practice: the UI would show RUNNING campaigns that never
@@ -210,7 +235,15 @@ export class DialerEngine {
     inFlight: number;
     awaitingAgent: number;
     snapshot: DialerSnapshot | null;
-    lastPlan: { attempts: number; reasoning: readonly string[]; at: number } | null;
+    lastPlan: {
+      requested: number;
+      approved: number;
+      verdict: string;
+      reasoning: readonly string[];
+      safety: string;
+      reductions: readonly { control: string; ceiling: number; from: number; to: number }[];
+      at: number;
+    } | null;
   } {
     const campaign = this.#options.campaigns.findById(campaignId);
     const recorded = this.#lastPlan.get(campaignId);
@@ -223,7 +256,15 @@ export class DialerEngine {
       lastPlan:
         recorded === undefined
           ? null
-          : { attempts: recorded.plan.attempts, reasoning: recorded.plan.reasoning, at: recorded.at },
+          : {
+              requested: recorded.plan.requested,
+              approved: recorded.decision.approved,
+              verdict: recorded.decision.verdict,
+              reasoning: recorded.plan.reasoning,
+              safety: recorded.decision.explanation,
+              reductions: recorded.decision.reductions,
+              at: recorded.at,
+            },
     };
   }
 
@@ -349,16 +390,36 @@ export class DialerEngine {
     }
 
     const snapshot = this.buildSnapshot(current);
+    // Stage 1 — the pacing engine produces a REQUEST. It cannot clamp itself and has no
+    // reference to any limit (DECISIONS.md D-018).
     const plan = this.#strategies[current.dialingMode].computeDialPlan(snapshot);
-    this.#lastPlan.set(campaignId, { plan, at: snapshot.now });
+
+    // Stage 2 — the Safety Controller decides what is actually allowed. This is the only
+    // path from a pacing number to an approved call count.
+    const decision = this.#safetyController.review(
+      {
+        campaignId,
+        mode: current.dialingMode,
+        requested: plan.requested,
+        reasoning: plan.reasoning,
+      },
+      this.#controllerContext(current, snapshot),
+    );
+    this.#lastPlan.set(campaignId, { plan, decision, at: snapshot.now });
 
     events.emit({
       type: 'dialer.plan',
       severity: 'debug',
-      message: `${campaign.dialingMode} plan: ${plan.attempts} attempt(s)`,
+      message:
+        `${campaign.dialingMode} pacing requested ${plan.requested}; ` +
+        `safety controller ${decision.verdict} ${decision.approved}`,
       campaignId,
       metadata: {
-        attempts: plan.attempts,
+        requested: plan.requested,
+        approved: decision.approved,
+        verdict: decision.verdict,
+        safetyExplanation: decision.explanation,
+        reductions: decision.reductions,
         reasoning: plan.reasoning,
         availableAgents: snapshot.availableAgents,
         pendingConnections: snapshot.pendingConnections,
@@ -369,7 +430,8 @@ export class DialerEngine {
     let dialled = 0;
     const claimedThisTick: string[] = [];
 
-    for (let i = 0; i < plan.attempts; i += 1) {
+    // Stage 3 — the allocator acts on the APPROVED number, never the requested one.
+    for (let i = 0; i < decision.approved; i += 1) {
       const outcome = await this.#attemptDial(current, claimedThisTick);
       if (outcome.kind === 'dialled') {
         dialled += 1;
@@ -388,10 +450,12 @@ export class DialerEngine {
       events.emit({
         type: 'dialer.tick',
         severity: 'debug',
-        message: `Tick placed ${dialled} of ${plan.attempts} planned call(s)`,
+        message: `Tick placed ${dialled} of ${decision.approved} approved call(s)`,
         campaignId,
         metadata: {
-          planned: plan.attempts,
+          requested: plan.requested,
+          approved: decision.approved,
+          verdict: decision.verdict,
           dialled,
           denials: denials.map((denial) => denial.code),
         },
@@ -470,6 +534,45 @@ export class DialerEngine {
    * `#attemptDial`; this only avoids reserving a contact when the campaign as a whole is
    * not permitted to dial at all.
    */
+  /**
+   * Assemble what the Safety Controller reasons over.
+   *
+   * Built here rather than inside the controller so the controller stays a pure function of
+   * its input — which is what makes its four verdicts directly unit-testable without a
+   * database, a clock or a provider.
+   */
+  #controllerContext(campaign: Campaign, snapshot: DialerSnapshot): SafetyControllerContext {
+    const providerMetrics = this.#options.getProvider(campaign.providerId).metrics();
+    const providerFailureRate =
+      providerMetrics.requests === 0
+        ? 0
+        : (providerMetrics.rejected + providerMetrics.silent) / providerMetrics.requests;
+
+    return {
+      campaign,
+      emergencyStopped: this.#options.isEmergencyStopped(),
+      availableAgents: snapshot.availableAgents,
+      pendingConnections: snapshot.pendingConnections,
+      campaignHeadroom: snapshot.campaignHeadroom,
+      globalHeadroom: snapshot.globalHeadroom,
+      providerHeadroom: snapshot.providerHeadroom,
+      rateLimitHeadroom: snapshot.rateLimitHeadroom,
+      remainingContacts: snapshot.remainingContacts,
+      abandonRate: snapshot.abandonRate,
+      abandonSample: snapshot.abandonSample,
+      answerRateSample: snapshot.recentSample,
+      providerFailureRate,
+      // Blended the same way the pacer blends it, and floored, so the controller's bound is
+      // computed from the same belief about the world rather than a different one.
+      estimatedAnswerRate: Math.max(
+        this.#options.config.predictive.minAnswerRate,
+        snapshot.recentSample === 0
+          ? 0.9
+          : snapshot.historicalAnswerRate * 0.3 + snapshot.recentAnswerRate * 0.7,
+      ),
+    };
+  }
+
   #campaignGate(campaign: Campaign): SafetyDecision {
     return this.#options.safety.canInitiateCall(this.#safetyContext(campaign, null, null));
   }
@@ -633,6 +736,7 @@ export class DialerEngine {
       settled: false,
     };
     this.#inFlight.set(callId, context);
+    this.#adjustPending(context.campaignId, 1);
 
     events.emit({
       type: 'call.created',
@@ -793,8 +897,18 @@ export class DialerEngine {
    * the call is abandoned, which is the harm the abandon-rate control measures.
    */
   #handleAnswered(context: CallContext, campaign: Campaign): void {
-    this.#transitionCall(context, 'CONNECTED');
+    // The idempotency guard. A provider that retries a webhook delivers ANSWERED two or three
+    // times; only the delivery that actually moves the call may allocate an agent. Without
+    // this check every redelivery pulled another agent out of the pool for a conversation
+    // that already had one — three agents for one call (BUG.md B-010).
+    const wasPending = context.status !== 'CONNECTED' && context.status !== 'ON_HOLD';
+    if (!this.#transitionCall(context, 'CONNECTED')) return;
+    if (wasPending) this.#adjustPending(context.campaignId, -1);
     context.answeredAt = this.#options.clock.now();
+
+    // The call has entered its conversation phase, where silence is expected. Re-arm against
+    // the call-duration ceiling rather than the setup timeout (B-012).
+    this.#armWatchdog(context);
 
     this.#options.events.emit({
       type: 'call.answered',
@@ -870,16 +984,11 @@ export class DialerEngine {
     this.#dequeueAwaiting(campaign.id, context.callId);
     context.abandonTimer = null;
 
+    // No `call.abandoned` emission here: `#settle` emits it from EVENT_FOR_OUTCOME, and
+    // doing both logged every abandonment twice — which matters because this is the metric
+    // the compliance story rests on, and a doubled event log is a doubled apparent problem
+    // (BUG.md B-014).
     this.#options.calls.markAbandoned(context.callId);
-    this.#options.events.emit({
-      type: 'call.abandoned',
-      severity: 'warn',
-      message: 'Call abandoned: answered but no agent became available',
-      campaignId: campaign.id,
-      contactId: context.contactId,
-      callId: context.callId,
-      metadata: { abandonTimeoutMs: campaign.safety.abandonTimeoutMs },
-    });
 
     // Hang up on the provider side too, or the mock keeps a slot occupied for a call nobody
     // is on.
@@ -908,13 +1017,20 @@ export class DialerEngine {
     if (campaign.dialingMode !== 'PREDICTIVE') return;
     if (campaign.predictivePausedReason !== null) return;
 
+    // Acts on the Wilson lower bound rather than the raw rate and a fixed minimum sample.
+    // Waiting for 20 samples meant up to 20 people heard silence before the control engaged
+    // — in the assignment's 70%-answer-rate scenario it fired 22 seconds and 13 abandons
+    // late (BUG.md B-013). The bound reacts as soon as the evidence is strong, whatever the
+    // sample size, and stays quiet when it is not.
     const abandon = this.#options.metrics.abandonRate(campaign.id);
-    if (abandon.sample < campaign.safety.abandonMinSample) return;
-    if (abandon.rate <= campaign.maxAbandonRate) return;
+    const bound = this.#options.metrics.abandonRateLowerBound(campaign.id);
+    if (abandon.sample === 0) return;
+    if (bound.rate <= campaign.maxAbandonRate) return;
 
     const reason =
-      `abandon rate ${(abandon.rate * 100).toFixed(1)}% exceeded the maximum ` +
-      `${(campaign.maxAbandonRate * 100).toFixed(1)}% over ${abandon.sample} answered calls`;
+      `abandon rate ${(abandon.rate * 100).toFixed(1)}% over ${abandon.sample} answered calls ` +
+      `(95% lower bound ${(bound.rate * 100).toFixed(1)}%) exceeded the maximum ` +
+      `${(campaign.maxAbandonRate * 100).toFixed(1)}%`;
 
     this.#options.campaigns.setPredictivePausedReason(campaign.id, reason, this.#options.clock.now());
     this.#options.events.emit({
@@ -953,11 +1069,34 @@ export class DialerEngine {
   // Timeouts
   // ---------------------------------------------------------------------------
 
+  /**
+   * Arm (or re-arm) the stuck-call watchdog for the phase the call is now in.
+   *
+   * Two phases, two very different timeouts, and conflating them was a real bug (B-012):
+   *
+   *   setup      created -> answered.  A provider that has not rung or answered within
+   *                                    `providerTimeoutMs` has gone silent on us.
+   *   conversation  answered -> ended. Silence here is *expected* — nothing is emitted while
+   *                                    two people talk — so the only sensible bound is a
+   *                                    generous ceiling on call length.
+   *
+   * Measuring a conversation against the setup timeout killed every call longer than 45
+   * seconds and reported it as a provider failure. It went unnoticed because the default
+   * simulated talk time was 25 seconds; the assignment's 120s and 180s scenarios exposed it
+   * immediately.
+   */
   #armWatchdog(context: CallContext): void {
+    if (context.watchdog !== null) this.#options.clock.clearTimer(context.watchdog);
+
+    const connected = context.status === 'CONNECTED' || context.status === 'ON_HOLD';
+    const timeout = connected
+      ? this.#options.config.dialer.maxCallDurationMs
+      : this.#options.config.dialer.providerTimeoutMs;
+
     context.watchdog = this.#options.clock.setTimer(
-      this.#options.config.dialer.providerTimeoutMs,
+      timeout,
       () => this.#onTimeout(context),
-      `watchdog:${context.callId}`,
+      `watchdog:${connected ? 'conversation' : 'setup'}:${context.callId}`,
     );
   }
 
@@ -1049,6 +1188,35 @@ export class DialerEngine {
     },
   ): void {
     if (context.settled) return;
+
+    // Check the terminal transition is reachable BEFORE committing to settle.
+    //
+    // An out-of-order delivery can try to settle a call into a state it cannot reach — a
+    // stale NO_ANSWER for a call that has since connected, say. That event is describing an
+    // outcome that did not happen, and the call is fine. Committing first and discovering the
+    // illegality afterwards is what produces the worst failure in this system: the lease is
+    // released while the call row stays active, and the in-memory ledger silently disagrees
+    // with the database (BUG.md B-001, and again as B-010).
+    //
+    // Terminal states reachable from every in-flight state — TIMEOUT, CANCELLED — are
+    // deliberately always legal, so the watchdog and campaign-stop paths can never be
+    // blocked by this check.
+    if (
+      context.status !== input.callStatus &&
+      !callStateMachine.can(context.status, input.callStatus)
+    ) {
+      this.#options.events.emit({
+        type: 'call.failed',
+        severity: 'warn',
+        message: `Ignored stale ${input.outcome} for a call already ${context.status}`,
+        campaignId: context.campaignId,
+        contactId: context.contactId,
+        callId: context.callId,
+        metadata: { from: context.status, attempted: input.callStatus, outcome: input.outcome },
+      });
+      return;
+    }
+
     context.settled = true;
 
     const { clock, calls, concurrency, events, metrics, agentService } = this.#options;
@@ -1085,6 +1253,9 @@ export class DialerEngine {
     }
 
     concurrency.release(context.lease);
+    if (context.status !== 'CONNECTED' && context.status !== 'ON_HOLD') {
+      this.#adjustPending(context.campaignId, -1);
+    }
     this.#inFlight.delete(context.callId);
     if (context.providerCallId !== null) this.#byProviderCallId.delete(context.providerCallId);
 
@@ -1194,8 +1365,17 @@ export class DialerEngine {
   // Helpers
   // ---------------------------------------------------------------------------
 
-  #transitionCall(context: CallContext, to: CallStatus): void {
-    if (context.status === to) return;
+  /**
+   * Move a call, reporting whether the move actually happened.
+   *
+   * The return value is the idempotency signal, and callers **must** honour it. A duplicate
+   * ANSWERED finds the call already CONNECTED and returns false; a caller that ignored that
+   * and carried on with the side effects would reserve a second agent for a conversation
+   * that already has one (BUG.md B-010).
+   */
+  #transitionCall(context: CallContext, to: CallStatus): boolean {
+    // Already there. A redelivered event, not a new fact.
+    if (context.status === to) return false;
     if (!callStateMachine.can(context.status, to)) {
       // Not thrown: a provider may legitimately report events out of order or late, and a
       // hard failure here would take down a whole campaign for one odd event. Recorded so it
@@ -1208,11 +1388,14 @@ export class DialerEngine {
         callId: context.callId,
         metadata: { from: context.status, to },
       });
-      return;
+      return false;
     }
 
     const now = this.#options.clock.now();
-    this.#options.calls.updateStatus(context.callId, context.status, to, now);
+    // Compare-and-set against the state we believe the call is in. If another delivery of
+    // the same event got here first, this changes zero rows and we must not proceed.
+    const applied = this.#options.calls.updateStatus(context.callId, context.status, to, now);
+    if (!applied) return false;
     const from = context.status;
     context.status = to;
 
@@ -1235,15 +1418,31 @@ export class DialerEngine {
     if (contactStatus !== undefined) {
       this.#options.contacts.setStatus(context.contactId, contactStatus, now);
     }
+    return true;
   }
 
   #pendingConnections(campaignId: string): number {
-    let pending = 0;
+    return this.#pendingByCampaign.get(campaignId) ?? 0;
+  }
+
+  #adjustPending(campaignId: string, delta: number): void {
+    const next = (this.#pendingByCampaign.get(campaignId) ?? 0) + delta;
+    if (next <= 0) this.#pendingByCampaign.delete(campaignId);
+    else this.#pendingByCampaign.set(campaignId, next);
+  }
+
+  /**
+   * Recompute the counter from scratch and compare. An incrementally maintained count that
+   * silently drifts would under-report calls in flight, which is the input the pacer uses to
+   * avoid over-dialing — so the cheap version is verified against the honest one in tests.
+   */
+  pendingConnectionsAudit(campaignId: string): { counter: number; scanned: number } {
+    let scanned = 0;
     for (const context of this.#inFlight.values()) {
       if (context.campaignId !== campaignId) continue;
-      if (context.status !== 'CONNECTED' && context.status !== 'ON_HOLD') pending += 1;
+      if (context.status !== 'CONNECTED' && context.status !== 'ON_HOLD') scanned += 1;
     }
-    return pending;
+    return { counter: this.#pendingConnections(campaignId), scanned };
   }
 
   #isCampaignComplete(campaignId: string): boolean {

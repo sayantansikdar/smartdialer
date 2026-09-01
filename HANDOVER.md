@@ -6,77 +6,61 @@ If you are a new developer or a new AI session, **read this file first**, then
 
 ---
 
-## Status as of 2026-08-31 — complete (milestones 1–12 of 12)
+## Status as of 2026-09-01 — aligned to the assignment brief
 
-Backend and dashboard are both finished and verified end to end.
+Backend, dashboard and the assignment's specific requirements are all in place. One known
+open issue (B-015), characterised and contained rather than hidden.
 
-### What has been completed
+### What changed most recently
 
-* **All twelve milestones.** Scaffold and docs; core primitives (virtual clock, seeded RNG,
-  event bus, state machines, structured errors, validated config); SQLite persistence with
-  migrations and repositories; the domain model and its four state machines; the provider
-  abstraction with two mock providers; concurrency, safety, retry and rate limiting; the dialer
-  engine with both pacing strategies; events, metrics and invariants; REST API and SSE; the
-  simulation engine with eight scenarios; seed data; and the nine-view React dashboard.
-* **471 tests across 20 files**, all passing in ~6s. Typecheck (backend and web) and lint clean.
-* **A fresh clone needs only `npm install && npm run dev`.** The database directory and the
-  migrations are created on first start; `db:migrate` and `seed` are conveniences, not
-  prerequisites (B-008).
-* **Configuration is loaded from `.env`** via Node's native `--env-file-if-exists` on every
-  entry point (B-007). Before that fix the file the README told users to create did nothing.
-* **`npm run verify`** runs the entire checklist — typecheck, lint, all six test suites, the
-  production build, migrations, seeding and all eight scenarios — in about 19 seconds, exiting
-  non-zero on any failure. Its ability to *fail* is itself verified (`TEST_CHECKLIST.md` row 55).
-* **All eight scenarios** pass their own expectations *and* every invariant.
-* **Verified live, twice over.** Against the HTTP API directly, and then by driving a headless
-  browser against the running app — each dashboard control asserted to change real server
-  state, not just to render. See `TEST_CHECKLIST.md` rows 20–53.
+Audited against `Tech Assignment - Hiring 2026.pdf` and closed the real gaps:
 
-### What is currently being worked on
+* **Safety Controller** (`src/dialer/safety-controller.ts`) — the brief's "important part".
+  Pacing engines now produce a *request* and can no longer clamp themselves; the controller is
+  the only path to an approved count, with four verdicts including `FALLBACK_PROGRESSIVE`
+  (D-018).
+* **Duplicate and out-of-order provider events** — `UnreliableMockTelecomProvider` now
+  duplicates and reorders on purpose, and the engine survives it (D-020). Found B-010: three
+  duplicate ANSWERED events were reserving three agents.
+* **Worker-crash recovery** (`src/services/recovery.ts`) — reconciles orphaned calls, contacts
+  and agents at startup (D-019).
+* **Scenarios A/B/C/D and agent-drop** — the brief's pacing table, plus 30 of 40 agents
+  vanishing mid-run.
+* **Load test and `SCALE.md`** — measured, not asserted. Found and largely fixed B-016.
+* **`ANSWER.md`** — the brief's final question.
 
-Nothing. The project is at a complete, verified checkpoint.
+### Bugs found and fixed this session
 
-### What remains
-
-Nothing required.
-
-* **CI is written but dormant.** `.github/workflows/ci.yml` calls `npm run verify`. GitHub only
-  reads workflows from the repository root, and this project is a subdirectory of a
-  multi-project workspace (D-001) — so it activates the moment the project is split out, and
-  does nothing before then. `npm run verify` covers the same ground locally.
-* **Rendering is still not unit-tested**, deliberately. Frontend *logic* is (25 tests); its
-  components are verified by driving a real browser. Asserting the shape of rendered JSX would
-  test the test.
-* Anything under "Would require production infrastructure" in `README.md`.
+B-010 (duplicate events reserved multiple agents), B-011 (abandon rate reported 0% while 29
+were abandoned), B-012 (watchdog killed every call over 45s), B-013 (abandon control fired 13
+abandons late), B-014 (abandonments logged twice), B-016 (reservation query sorted the whole
+campaign per attempt — 722µs → 17.9µs, now flat).
 
 ### What is broken
 
-Nothing known. Five bugs were found and fixed during development — B-001 through B-005 — each
-with a regression test. See `BUG.md`.
+**B-015 is open.** Predictive pacing abandons ~13–20% in the long-talk-time scenarios
+(`pacing-a`, `pacing-c`). The safety control detects it, latches a pause and stands the
+campaign down — the *guarantee* holds, the *guess* is worse than it should be. Two hypotheses
+were tested by measurement and both disproved; the current best explanation and the intended
+fix are in `BUG.md` B-015.
+
+The scenario expectations deliberately assert the safety properties and **not** a low abandon
+rate, because loosening a test until it passes would hide exactly this.
 
 ### What should not be changed
 
-* **`SIMULATION_MODE=true` startup refusal, the absence of any real-telecom adapter, and the
-  `+1-555-01xx` phone-number guard in `src/api/schemas.ts`.** These are why this repository is
-  safe to run.
-* **The ESLint determinism rules.** Disabling them silently breaks reproducibility (D-011). The
-  three `eslint-disable` comments in `src/services/simulation.ts` are deliberate and documented:
-  they measure the run from outside it.
-* **The variance guard in `src/dialer/predictive.ts`.** Removing it restores a 26% abandonment
-  rate (B-004). If predictive pacing looks too timid on a small team, that is the correct
-  answer, not a bug — see D-013.
-* **`InvariantChecker`'s ledger-versus-database comparison.** The single highest-value check in
-  the suite; it is what caught B-001.
-* **The dashboard polling aggregates rather than deriving them from the event stream** (D-017).
-  Recomputing metrics in the browser would duplicate `MetricsService` and drift from it
-  invisibly.
+* The safety gate, the absence of a real-telecom adapter, the `+1-555-01xx` guard.
+* **The pacing engines' inability to reach a limit** (D-018). The tests that assert they import
+  nothing but their own interface are structural, not cosmetic.
+* `#transitionCall`'s return value must be honoured by every caller (D-020, B-010).
+* `#settle` must verify reachability *before* committing (B-010).
+* The covering index in `migrations/002` — it is worth 40× at 1,500 agents (B-016).
 
 ### What the next session should do
 
-Nothing is outstanding. If you are picking this up to extend it: read `src/core/clock.ts`,
-then `src/services/safety.ts`, then `#attemptDial` in `src/services/dialer-engine.ts` — those
-three explain most of the design. Run `npm run scenario -- predictive` to see the engine work,
-and `npm run dev` to watch it.
+Either B-015 (model time-to-free-seat rather than instantaneous free seats) or the next
+scaling term named in `SCALE.md` (per-attempt agent counting). Both have measurement harnesses
+already: `pacing-a`..`pacing-d` and `npm run load`.
 
 ## Verified environment facts
 
@@ -207,4 +191,19 @@ Broken:        Nothing known. verify: 19/19 in 17.7s.
 Watch out for: Seeded campaigns have finite contacts — a COMPLETED one will not restart. Run
                `npm run db:reset && npm run seed` for a fresh demo.
 Next:          Nothing outstanding.
+```
+
+### 2026-09-01 — Session 7 (assignment alignment)
+
+```
+Done:          Audited against the assignment PDF. Added the Safety Controller (pacing can no
+               longer clamp itself), duplicate/out-of-order event handling, worker-crash
+               recovery, scenarios A-D + agent-drop, load test and SCALE.md, ANSWER.md.
+               Fixed B-010 through B-014 and B-016. 513 tests, 13/13 scenarios, verify green.
+Remaining:     B-015 — predictive over-abandons with long talk times. Characterised, contained
+               by the safety control, not solved.
+Broken:        Nothing that breaches a guarantee. B-015 is a pacing-quality issue.
+Watch out for: Do not "fix" B-015 by loosening the scenario expectations. They assert safety
+               properties on purpose.
+Next:          B-015 (time-to-free-seat model) or the next scaling term in SCALE.md.
 ```

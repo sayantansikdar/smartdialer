@@ -30,7 +30,9 @@
     "preview": "vite preview",
     "test:web": "vitest run --project web",
     "verify": "node scripts/verify.mjs",
-    "verify:quick": "node scripts/verify.mjs --quick"
+    "verify:quick": "node scripts/verify.mjs --quick",
+    "load": "node --experimental-strip-types --env-file-if-exists=.env scripts/load-test.mjs",
+    "load:quick": "node --experimental-strip-types --env-file-if-exists=.env scripts/load-test.mjs --quick"
   },
   "dependencies": {
     "fastify": "^5.12.1",

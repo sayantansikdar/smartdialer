@@ -501,3 +501,113 @@ server this is not a real cost, and it is trivially adjustable.
 each opening their own would be nine subscribers on the server for no benefit.
 
 **AI contributor:** Claude Opus 5 (`claude-opus-5`), via Claude Code.
+
+---
+
+## D-018 — The pacing engine cannot enforce its own limits
+
+**Date:** 2026-09-01
+
+**Context.** The assignment is explicit about this and calls it "the important part": the
+predictive algorithm must never directly place a call, and must not be able to switch the
+safety mechanism off. The required shape is
+`Campaign > Pacing Engine > Safety Controller > Call Allocator > Telecom Provider`.
+
+The implementation did not match. `applyLimits` lived inside `src/dialer/strategy.ts` and was
+called by both pacing strategies — so the component computing an aggressive number was also
+the component enforcing the bound on it.
+
+**Chosen.** A pacing engine returns `{ requested, reasoning }` and nothing else. It has no
+reference to a limit, a provider, a repository or the controller. `SafetyController.review()`
+is the only code path that can produce an approved count, and it returns one of four verdicts:
+`APPROVED`, `REDUCED`, `REJECTED`, `FALLBACK_PROGRESSIVE`.
+
+**Reason.** A bound inside the thing it bounds is not a bound. Every pacing bug was
+automatically a safety bug: a collapsed answer-rate estimate, a runaway feedback loop, or a
+future contributor "simplifying" a clamp would all have become over-dialing. Separated, the
+pacer can be arbitrarily wrong and the ceiling still holds, because the ceiling is computed by
+code that never sees the pacer's intent.
+
+`FALLBACK_PROGRESSIVE` is the verdict that makes this more than bookkeeping. When the estimate
+underlying the bet stops being credible — too little evidence, provider unhealthy, abandonment
+climbing — the controller replaces the request with the progressive number rather than
+stopping. Progressive dialing cannot abandon anyone, so degrading to it is how the system keeps
+working when it can no longer safely guess.
+
+**Tradeoffs.** Two components where there was one, and a context object assembled per tick.
+The variance bound is now computed in both places — deliberate duplication, since the pacer
+needs it to make a sensible request and the controller needs it to be a real limit.
+
+**Consequences.** `applyLimits` is gone. `DialPlan.attempts` became `DialPlan.requested`,
+which reads as the promise it now makes. Enforced structurally by tests that assert the pacing
+modules import nothing but their own interface, and that the controller's source contains no
+`disable`/`bypass`/`override` identifier.
+
+**AI contributor:** Claude Opus 5 (`claude-opus-5`), via Claude Code.
+
+---
+
+## D-019 — Crash recovery assumes this process owns everything
+
+**Date:** 2026-09-01
+
+**Context.** The concurrency ledger is in-memory and dies with the process (D-007), but the
+database survives. A restart inherited contacts stuck in `RESERVED`, agents stuck in `ON_CALL`,
+and calls that could never reach a terminal state because the timers that would have timed
+them out died too. Every one a permanent leak.
+
+**Chosen.** `RecoveryService` runs once at container construction, before the engine or the API
+can observe anything. Anything mid-flight is reclaimed: calls to `TIMEOUT`, contacts to
+`READY`, agents to `AVAILABLE`.
+
+**Reason.** The rule "on startup, anything in flight belongs to a worker that no longer exists"
+is sound *because* the design is single-process. Recovering before any component reads state
+means none of them has to tolerate the orphaned version.
+
+Reclaimed calls are classified `TIMEOUT`/transient rather than `FAILED`/permanent, because we
+genuinely do not know what happened to them — and the crash was our fault, not the borrower's.
+Writing them off would burn a contact's attempt budget for our outage.
+
+**Tradeoffs.** In a genuinely multi-worker deployment this would reclaim a *peer's* live work.
+Making it safe there needs a lease or heartbeat column to distinguish my in-flight calls from
+someone else's — named in `SCALE.md` as one of the first things that would have to change.
+
+**Consequences.** Every reclamation emits a `warn` event. A system that quietly tidies up after
+a crash is one where crashes go unnoticed.
+
+**AI contributor:** Claude Opus 5 (`claude-opus-5`), via Claude Code.
+
+---
+
+## D-020 — Idempotency comes from conditional transitions, not a de-duplication layer
+
+**Date:** 2026-09-01
+
+**Context.** Providers retry webhooks and deliver out of order. The assignment asks directly
+what happens on `ANSWERED, ANSWERED, ANSWERED, COMPLETED` and on `COMPLETED, ANSWERED,
+RINGING`.
+
+**Options considered.** (a) Track processed event ids and drop repeats. (b) Sequence numbers
+per call, ignore anything older. (c) Make every state change conditional on the state the
+engine believes the call is in, and honour the result.
+
+**Chosen.** (c).
+
+**Reason.** (a) and (b) both add a layer whose correctness is a separate thing to get right,
+and both only cover the duplicates you thought of. With (c) a duplicate finds the call already
+past that state, matches nothing and changes nothing — and the same mechanism covers stale
+events, unknown call ids, and orderings nobody anticipated, because none of them can satisfy a
+predicate describing a state the call is not in.
+
+It also required no new storage, which matters: an event-id table would be written on every
+provider callback, on the hot path, for a property that falls out of a `WHERE` clause.
+
+**Tradeoffs.** Every caller of a transition must honour its return value. That is a real
+discipline cost and it is exactly what went wrong in B-010 — the guard existed and the caller
+ignored it. The failure mode is silent, so it is covered by tests that replay captured events.
+
+**Consequences.** `#transitionCall` returns whether it applied. `#settle` verifies reachability
+*before* committing. `UnreliableMockTelecomProvider` duplicates and reorders events on purpose,
+so these paths are exercised by every run against it rather than only by targeted tests.
+
+**AI contributor:** Claude Opus 5 (`claude-opus-5`), via Claude Code.

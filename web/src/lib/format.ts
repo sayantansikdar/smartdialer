@@ -60,6 +60,11 @@ export function statusTone(status: string): Tone {
       return 'danger';
     case 'DIALING': case 'ON_CALL': case 'RESERVED': case 'QUEUED': case 'CREATED':
       return 'info';
+    // Safety-controller verdicts.
+    case 'APPROVED': return 'ok';
+    case 'REDUCED': return 'info';
+    case 'FALLBACK_PROGRESSIVE': return 'warn';
+    case 'REJECTED': return 'danger';
     case 'DRAFT': case 'STOPPED': case 'OFFLINE': case 'EXHAUSTED':
       return 'muted';
     default:
