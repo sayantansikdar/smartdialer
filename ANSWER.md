@@ -90,13 +90,28 @@ rather than after a fixed number of people have been abandoned (`B-013`).
 
 ## What I would do differently with another week
 
-Honestly: the pacing still abandons more than I want in the long-talk-time scenarios
-(`B-015`). The safety control catches it and stops the campaign — the guarantee holds — but
-the guess is worse than it should be, and I have characterised the problem rather than solved
-it. The next thing I would do is model the *time-to-free-seat* distribution rather than
-treating current free seats as the whole story: with 180-second calls, the seats available
-when a batch is dialled are not the seats available four seconds later when it is answered,
-and nothing in the current pacer knows that.
+The most instructive thing that happened while building this: I spent a long time believing the
+long-talk-time abandonment (`B-015`) was a *modelling* problem — that the pacer needed a better
+theory of when seats become free. I tested two hypotheses against it and both were disproved by
+measurement.
+
+It was an arithmetic bug. `pendingConnections` was computed as
+`ledgerActiveCalls − connectedCalls`, two different sources subtracted from each other, and it
+went **negative** whenever a call outlived its concurrency lease. The pacer *subtracts* that
+value, so −19 added nineteen lines of phantom capacity: with one free agent it approved ten
+calls. Fixing it took three scenarios from 5–22% abandonment at ~60% utilisation to **0–0.4%
+abandonment at 84–94%**, roughly eight times the throughput.
+
+The lesson I would carry forward is about where to look. A sophisticated-sounding symptom
+invited a sophisticated explanation, and the actual fault was a subtraction between two things
+that were never guaranteed to be comparable. What found it was printing the numbers the pacer
+was actually given, which I should have done first.
+
+A residual weakness remains at very low answer rates (`pacing-a`, 20%). What is now known about
+it that was not before: sweeping the variance guard from 1.5σ to 3.0σ changes those results by
+*exactly nothing*, so the guard is not the binding constraint and tuning it is pointless. The
+next thing to try is the time-to-free-seat model — which was my original hypothesis, and may
+yet be right, but I would now want the measurement before the theory.
 
 The second thing would be the sharded-worker model in `SCALE.md` — not for throughput, but
 because a single-process ledger is the assumption most likely to be wrong in production, and

@@ -454,7 +454,16 @@ export class SimulationService {
       // 'record' rather than 'throw': a simulation should finish and report every violation
       // it found, not abort at the first one.
       invariantMode: 'record',
-      providerConfig: config.provider,
+      providerConfig: {
+        // Give the mock provider at least as much capacity as the campaign is allowed to
+        // use, unless the scenario deliberately constrains it. Its own default is 40, which
+        // silently became the binding limit in every scenario asking for more — peak
+        // concurrency pinned at ~41 regardless of team size or campaign configuration, which
+        // made the pacing scenarios measure the provider's ceiling rather than the pacer
+        // (BUG.md B-018).
+        maxConcurrentCalls: Math.max(config.maxConcurrentCalls * 2, 40),
+        ...config.provider,
+      },
     });
   }
 

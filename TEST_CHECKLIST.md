@@ -181,3 +181,40 @@ view reads (`DialPlan.attempts` became `requested`, plus a controller decision a
 
 Row 75 is a genuine `kill -9` against a running campaign, not a simulated one — the process was
 killed with calls actually in flight and the next start reconciled them.
+
+## Predictive pacing after the B-015 fix
+
+Same scenarios, same seeds, before and after fixing the negative `pendingConnections`.
+
+| # | Scenario | Before | After | Status |
+|---|---|---|---|---|
+| 85 | `pacing-b` (50% answer, 90s) | 35 connected · 5.4% abandon · 62% util | **269 · 0.4% · 84.5%** | ✅ pass |
+| 86 | `pacing-c` (70% answer, 180s) | 24 connected · 22.6% abandon · 54% util | **189 · 0.0% · 94.1%** | ✅ pass |
+| 87 | `pacing-d` (rate collapses mid-run) | 36 connected · 5.3% abandon · 67% util | **142 · 0.0% · 84.2%** | ✅ pass |
+| 88 | `pendingConnections` never negative | Non-negative on every plan, whole campaign, 180s calls | min observed 0 | ✅ pass |
+| 89 | Long call outliving the old lease TTL | Settled, ledger agrees with database | both 0, invariants pass | ✅ pass |
+| 90 | Variance-guard sweep 1.5σ → 3.0σ | Identifies whether the guard is the binding constraint | `pacing-a` and `agent-drop` **identical at every value** — it is not | ✅ pass |
+| 91 | All 13 scenarios | Expectations and invariants | 13/13 `EXPECTATIONS: PASSED · INVARIANTS: PASSED` | ✅ pass |
+
+Row 90 is a negative result and worth keeping: it rules out the obvious lever for the residual
+weakness in `pacing-a`, which is more useful than another round of tuning.
+
+## B-017 and B-018 regression cover
+
+Both were fixed and documented before they had tests. These close that gap.
+
+| # | Check | Expected | Actual | Status |
+|---|---|---|---|---|
+| 92 | Campaign stands down when every agent goes offline | Bounded event count, not proportional to run length | `stalled: true`, <500 events (was 200,004) | ✅ pass |
+| 93 | …and revives when an agent returns | Not a one-way door | `stalled: false`, new calls placed | ✅ pass |
+| 94 | Does not stand down while calls are in flight | Keeps ticking for work it owns | blocked by e-stop, still ticking, calls live | ✅ pass |
+| 95 | Emergency stop and abandon pause still stand down | The original two conditions stay covered | both stand down and revive | ✅ pass |
+| 96 | An agent on a call cannot be moved to PAUSED | Illegal transition refused | throws `illegal transition` | ✅ pass |
+| 97 | Scenario provider capacity scales with the campaign | Peak reflects the pacer, not a shared 40-call wall | 60-agent peak > 1.5× the 10-agent peak | ✅ pass |
+| 98 | An explicitly-set provider capacity still binds | Provider refuses rather than exceeding | 500 rejections; provider `activeCalls` ≤ limit | ✅ pass |
+
+Row 98 documents a real subtlety rather than papering over it: the ledger legitimately reads
+**one** above the provider's limit during handover, because a call holds its lease while
+`createCall()` is awaiting acceptance. The window is bounded at one only because the engine
+dials sequentially within a tick — noted in `src/services/invariants.ts` so it is not silently
+invalidated if that ever changes.

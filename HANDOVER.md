@@ -38,7 +38,12 @@ campaign per attempt — 722µs → 17.9µs, now flat).
 
 ### What is broken
 
-**B-015 is open.** Predictive pacing abandons ~13–20% in the long-talk-time scenarios
+**B-015's root cause is fixed** — it was a negative `pendingConnections` fed straight into the
+pacer, not a modelling problem. Three scenarios went from 5–22% abandonment at ~60% utilisation
+to 0–0.4% at 84–94%. A residual weakness remains at very low answer rates; sweeping the variance
+guard rules that lever out entirely.
+
+**Superseded note (kept for the trail):** Predictive pacing abandons ~13–20% in the long-talk-time scenarios
 (`pacing-a`, `pacing-c`). The safety control detects it, latches a pause and stands the
 campaign down — the *guarantee* holds, the *guess* is worse than it should be. Two hypotheses
 were tested by measurement and both disproved; the current best explanation and the intended
@@ -206,4 +211,39 @@ Broken:        Nothing that breaches a guarantee. B-015 is a pacing-quality issu
 Watch out for: Do not "fix" B-015 by loosening the scenario expectations. They assert safety
                properties on purpose.
 Next:          B-015 (time-to-free-seat model) or the next scaling term in SCALE.md.
+```
+
+### 2026-09-01 — Session 8 (closed the audit gaps, fixed B-015's root cause)
+
+```
+Done:          Closed the four gaps the PDF audit surfaced (agent-disappears-during-setup,
+               crash-after-ANSWERED, Provider B genuinely slower, safety decisions in the
+               report). Then found B-017 (no-agent spin: 8,741ms -> 2ms) and B-018 (every
+               scenario was measuring the provider's 40-call ceiling, not the pacer).
+               Finally found B-015's real cause: pendingConnections went negative, adding
+               phantom capacity. pacing-b/c/d now 0-0.4% abandon at 84-94% util, ~8x the
+               throughput. 521 tests, 13/13 scenarios.
+Remaining:     Residual abandonment at 20% answer rates (pacing-a, agent-drop). The variance
+               guard is ruled out as the lever — sweeping 1.5σ to 3.0σ changes nothing.
+Broken:        Nothing that breaches a guarantee.
+Watch out for: pendingConnections is SUBTRACTED by the pacer. A negative value inflates the
+               plan rather than reducing it. tests/unit/pending-connections.test.ts guards it.
+Next:          Time-to-free-seat model for pacing-a, evaluated against the pacing-* scenarios.
+```
+
+### 2026-09-01 — Session 9 (closed the B-017 / B-018 gaps)
+
+```
+Done:          Both were fixed and verified but incompletely recorded: B-017's BUG.md entry
+               had been clobbered by a later edit, B-018 was filed out of order, and neither
+               had a regression test. Restored the entry, reordered BUG.md numerically, and
+               added tests/failure/stand-down.test.ts (5) and
+               tests/simulation/provider-capacity.test.ts (3). 529 tests.
+Remaining:     Nothing on B-017/B-018. B-015's residual low-answer-rate weakness stands.
+Broken:        Nothing.
+Watch out for: The concurrency ledger legitimately reads ONE above the provider's own limit
+               during handover (a call holds its lease while createCall awaits acceptance).
+               Bounded at one only because the engine dials sequentially within a tick —
+               documented in src/services/invariants.ts.
+Next:          Time-to-free-seat model for pacing-a.
 ```
