@@ -500,9 +500,11 @@ export class DialerEngine {
 
     const activeCalls = concurrency.activeForCampaign(campaign.id);
     let connectedCalls = 0;
+    let pendingConnections = 0;
     for (const context of this.#inFlight.values()) {
       if (context.campaignId !== campaign.id) continue;
       if (context.status === 'CONNECTED' || context.status === 'ON_HOLD') connectedCalls += 1;
+      else pendingConnections += 1;
     }
 
     // Deliberately NOT `metrics.campaignMetrics()`: that bundle aggregates the events table,
@@ -523,7 +525,13 @@ export class DialerEngine {
       activeCalls,
       // Calls that could still connect and would then need a seat. Counting only connected
       // calls here would turn a progressive dialer into an accidental predictive one.
-      pendingConnections: activeCalls - connectedCalls,
+      // Derived from the in-flight map alone. It used to be `ledgerActiveCalls -
+      // connectedCalls` — two different sources subtracted from each other, which went
+      // *negative* whenever a lease was released while its call was still in flight. The
+      // pacer subtracts this value, so a negative one silently *added* phantom capacity: with
+      // one free agent it approved ten calls (BUG.md B-015). Clamped as well as unified,
+      // because a count of things in flight has no meaningful negative value.
+      pendingConnections: Math.max(0, pendingConnections),
       connectedCalls,
       historicalAnswerRate,
       recentAnswerRate: recent.rate,
@@ -693,7 +701,12 @@ export class DialerEngine {
       campaignMaxConcurrentCalls: campaign.maxConcurrentCalls,
       // The lease must outlive the provider watchdog, or the sweep would reclaim slots for
       // calls that are still legitimately running.
-      ttlMs: config.dialer.providerTimeoutMs * 2,
+      // The lease is the backstop for a *lost watchdog*, so it must outlive the longest call
+      // the watchdog itself would tolerate — setup plus conversation, with margin. It was
+      // `providerTimeoutMs * 2` (90s), which is shorter than a 180-second conversation: every
+      // long call had its slot reclaimed mid-conversation while the call was still live
+      // (BUG.md B-015).
+      ttlMs: (config.dialer.providerTimeoutMs + config.dialer.maxCallDurationMs) * 2,
     });
 
     if (!acquisition.ok) {
@@ -1173,6 +1186,26 @@ export class DialerEngine {
         campaignId: lease.campaignId,
         callId: lease.callId,
         metadata: { leaseId: lease.id, acquiredAt: lease.acquiredAt, expiresAt: lease.expiresAt },
+      });
+
+      // Reclaiming the slot means we have given up on this call, so the call must be given up
+      // on too. Releasing the lease while leaving the context alive left the ledger and the
+      // in-flight map describing different worlds — which is precisely the divergence the
+      // invariant checker exists to catch, and which fed a negative `pendingConnections`
+      // straight into the pacer (BUG.md B-015).
+      const context = this.#inFlight.get(lease.callId);
+      if (context === undefined || context.settled) continue;
+
+      const campaign = this.#options.campaigns.findById(context.campaignId);
+      if (campaign === null) continue;
+
+      void this.#cancelProviderCall(context);
+      this.#settle(context, {
+        campaign,
+        outcome: 'TIMEOUT',
+        callStatus: 'TIMEOUT',
+        failureCode: ERROR_CODES.PROVIDER_TIMEOUT,
+        failureClass: 'TRANSIENT',
       });
     }
   }

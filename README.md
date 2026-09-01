@@ -12,121 +12,105 @@ timeout handling, deterministic simulation, and a live operational dashboard.
 
 ---
 
-## Quick start
+## 🌐 Live Web Dashboard
 
-```bash
-npm install
-npm run dev               # API on :3000, dashboard on :5173
-```
+You can explore the interactive dashboard online directly via GitHub Pages:
+👉 **[https://sayantansikdar.github.io/smartdialer/](https://sayantansikdar.github.io/smartdialer/)**
 
-That is genuinely all that is required — the database and its directory are created on first
-start, and migrations run automatically. For the demo dataset (three campaigns, 28 agents, 275
-contacts including do-not-call entries), stop the server and add:
-
-```bash
-npm run seed              # then `npm run dev` again
-```
-
-Open **http://localhost:5173**, go to **Campaigns**, and press **Start** on
-*Q3 Renewals (Progressive)*.
-
-Optional configuration lives in `.env` (`cp .env.example .env`), loaded natively by Node — no
-`dotenv` dependency. `SIMULATION_SPEED` is the one worth knowing: it defaults to `10`, which
-finishes a campaign in about a minute; `3` is easier to watch.
-
-> Seeding rewrites the database, so it refuses to run while the server is up — the server
-> caches id counters at startup and rows written behind its back would collide (`BUG.md` B-005).
-> The message tells you how to stop it.
+*(To drive real simulation state and control backend campaigns, follow the local run guide below.)*
 
 ---
 
-## What it is
+## 🚀 How to Run Locally (Step-by-Step Guide)
 
-An outbound dialer's hard parts are not the phone calls. They are: deciding *how many* calls
-to place when answers are probabilistic, never exceeding capacity when many things happen at
-once, releasing resources correctly when things fail, and never calling someone you must not
-call. This prototype implements those parts for real, and simulates only the telephony.
+### 1. Prerequisites
+- **Node.js**: `v22.12.0` or newer (check with `node --version`).
+- **npm**: `v10.0.0` or newer (check with `npm --version`).
 
-Three ideas hold the whole thing up:
-
-**One clock, two drivers.** All time flows through a single `SimulatedClock`. `FastDriver`
-drains it as fast as the CPU allows (tests, instant simulations); `PacedDriver` advances it
-against real time, scaled (the live dashboard, 1×–100×). The dashboard and the test suite
-therefore drive *the same engine along the same code path* — a green simulation test is
-evidence about what you will see on screen, not about a parallel test-only implementation.
-
-**The pacing engine never places a call.** It produces a *request* — "I think we can start 15
-more calls" — and has no reference to anything that could act on it. A separate
-`SafetyController` decides what is actually permitted, and can approve, reduce, reject, or
-**fall back to progressive behaviour** when the predictive estimate stops being trustworthy.
-A component that both computes an aggressive number and enforces the bound on it has no bound
-(D-018).
-
-**Reserve before you dial, release exactly once.** A contact is claimed with an atomic
-conditional `UPDATE`; a concurrency lease is acquired synchronously across three scopes before
-the provider is ever called; and leases are idempotent objects, so a double release is a no-op
-rather than silent capacity corruption. Nothing asynchronous happens between checking capacity
-and claiming it.
-
-**Predictive pacing bets on variance, not the mean.** The textbook formula
-(`lines = agents / answerRate`) abandoned 26% of answered calls in testing — real people
-picking up to silence. The pacer now solves `Lp + 1.5·√(Lp(1-p)) ≤ seats`, so expected answers
-*plus their variance* fit the available agents. See `DECISIONS.md` D-013 and `BUG.md` B-004.
-
-## Documentation map
-
-| File | What it answers |
-|---|---|
-| `HANDOVER.md` | What works right now, what's next — **read first** |
-| `ARCHITECTURE.md` | The shape of the system |
-| `DECISIONS.md` | Why it is built this way (15 entries) |
-| `CONSTRAINTS.md` | What must never be violated |
-| `FLOW.md` | How execution travels through the code |
-| `FEATURE.md` | Per-feature status and verification |
-| `BUG.md` | Bugs found, root causes, regression tests |
-| `TEST_CHECKLIST.md` | Executable verification with real recorded output |
-| `ROLLBACK.md` | How to undo things safely |
-| `SCALE.md` | What breaks first at 100 → 1,000 → 10,000 agents, measured |
-| `ANSWER.md` | The assignment's final question |
-
-## The demo, in five minutes
-
-1. **Progressive dialing.** Start *Q3 Renewals*. Open its detail page and read the **"Why this
-   many calls?"** panel — the dialer's own arithmetic, live. Progressive never dials more lines
-   than it has free agents, so nobody is ever abandoned.
-
-2. **Predictive dialing.** Start *New Product Outreach* (20 agents). Watch the same panel show
-   the answer-rate estimate, the occupancy feedback, and the variance guard clamping the
-   target. Peak concurrency exceeds the agent count — that is the over-dial — while the
-   abandon rate stays near zero.
-
-3. **Break the provider.** Go to **Provider** and press *All calls go silent*. The provider now
-   accepts calls and never reports an outcome. About 45 seconds of simulated time later,
-   `call.timeout` events appear in the event log, slots and agents are released, and retries
-   are scheduled. Nothing deadlocks.
-
-4. **Emergency stop.** Press it in the masthead. New calls stop immediately; the campaign
-   detail page tells you why (`EMERGENCY_STOP`). Release it and dialing resumes.
-
-5. **Simulations.** The **Simulation** tab runs any of eight predefined scenarios in an
-   isolated engine and reports `INVARIANTS: PASSED/FAILED` along with whether the scenario
-   demonstrated what it claims. Same seed ⇒ identical run.
-
-6. **Run it again.** A campaign that works through all its contacts moves to COMPLETED and
-   correctly refuses to restart. Press **Reset** to put the unsuccessful contacts back in the
-   pool and go again — it never restores a `DO_NOT_CALL` contact, and never re-dials someone
-   who was already reached.
-
-Or from the command line:
-
+### 2. Clone and Install
 ```bash
-npm run scenario -- predictive     # over-dials safely, limits authoritative
-npm run scenario -- timeout        # watchdog fires, resources released
-npm run scenario -- dnc            # zero calls to DO_NOT_CALL contacts
-npm run scenario -- race           # activeCalls <= limit under many workers
+# Clone the repository
+git clone https://github.com/sayantansikdar/smartdialer.git
+cd smartdialer
+
+# Install dependencies (zero native build dependencies required)
+npm install
 ```
 
-Each exits non-zero on failure, so they work directly in CI.
+### 3. Initialize Demo Data
+Populate the local SQLite database with pre-configured demo campaigns, 28 agents, and 275 realistic test contacts (including Do-Not-Call entries):
+```bash
+npm run seed
+```
+
+### 4. Launch the Application
+Start both the backend simulation engine and the live web dashboard supervisor:
+```bash
+npm run dev
+```
+
+The terminal will display the active services:
+- **Web Dashboard**: [http://localhost:5173](http://localhost:5173)
+- **API Server**: [http://127.0.0.1:3000](http://127.0.0.1:3000)
+
+### 5. Optional Tuning (`.env`)
+You can adjust the clock speed and engine parameters by creating a `.env` file (loaded natively by Node — no dependencies):
+```bash
+cp .env.example .env
+```
+Key settings:
+- `SIMULATION_SPEED=3`: Slower speed (3× real-time), ideal for watching individual call state transitions live.
+- `SIMULATION_SPEED=10`: Default speed (10× real-time), completes a 50-contact campaign in ~1 minute.
+
+---
+
+## 🎮 Interactive Client Demo & Walkthrough
+
+Follow this step-by-step tour to test and evaluate the system's core capabilities directly from the dashboard:
+
+### 1. Progressive Dialing (Guaranteed Zero Abandonment)
+1. Open **[http://localhost:5173](http://localhost:5173)** and navigate to the **Campaigns** tab in the sidebar.
+2. Click **Start** on **"Q3 Renewals (Progressive)"** (5 agents, 50 contacts).
+3. Click on the campaign name to open its detail page.
+4. Observe the live **"Why this many calls?"** decision box:
+   - Progressive dialing places **strictly 1 call per free agent**.
+   - As agents answer calls, available capacity decreases and new dials pause.
+   - **Result**: Exactly 0 abandoned calls — every answered customer reaches an available agent immediately.
+
+### 2. Predictive Dialing (High-Throughput Over-Dialing with Variance Guard)
+1. In the **Campaigns** tab, click **Start** on **"New Product Outreach (Predictive)"** (20 agents, 200 contacts).
+2. Open the campaign detail page and examine the real-time calculation:
+   - The engine computes the moving answer rate (e.g., ~50%) and **over-dials** (e.g., placing 30+ simultaneous calls for 20 seats).
+   - Notice the **Variance Guard** in action: rather than betting purely on averages, it reserves a safety margin for statistical fluctuations (`Lp + 1.5·√(Lp(1-p)) ≤ seats`).
+   - Peak concurrency safely exceeds the agent seat count while the abandon rate remains near zero.
+
+### 3. Simulating Telecom Outages & Watchdog Recovery
+1. Navigate to the **Provider** tab in the sidebar.
+2. Click **"All calls go silent"** (or increase the simulated network error rate).
+3. The mock telecom provider will now accept calls but deliberately drop all completion signals.
+4. Watch the dashboard's **Event Log** and **Calls** tab:
+   - In ~45 seconds of virtual time, the dialer's internal watchdog detects the dead calls.
+   - `call.timeout` events fire, concurrency slots and stuck agents are **automatically released**, and retries are scheduled with exponential backoff.
+   - **The system never deadlocks or leaks capacity.**
+
+### 4. Global Emergency Stop (Kill Switch)
+1. Click the red **Emergency Stop** button in the top navigation bar.
+2. Active campaigns pause instantly:
+   - No new dials are initiated across any campaign.
+   - Ongoing in-flight calls finish gracefully.
+   - Campaign detail pages immediately display `EMERGENCY_STOP` explainability banners.
+3. Click **Release Emergency Stop** to resume normal operation.
+
+### 5. Automated Scenario Testing & Invariant Verification
+1. Navigate to the **Simulation** tab in the sidebar.
+2. Select any scenario from the dropdown:
+   - `predictive`: Demonstrates safe over-dialing and limit enforcement.
+   - `timeout`: Demonstrates silent provider watchdog recovery.
+   - `dnc`: Formally proves **zero calls** are placed to `DO_NOT_CALL` contacts.
+   - `race`: Stress tests high-concurrency worker races.
+3. Click **Run Scenario** to execute the simulation in milliseconds and review the formal `INVARIANTS: PASSED` verdict report.
+
+---
 
 ## Dialing modes
 
