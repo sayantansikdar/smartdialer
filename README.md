@@ -177,6 +177,41 @@ The determinism proof is a SHA-256 over the ordered event stream: run the same s
 the digests match. It catches accidental non-determinism anywhere in the engine — timer
 ordering, iteration order, an unseeded draw — not just in RNG use.
 
+### Browser end-to-end tests (Cypress + Cucumber)
+
+```bash
+npm run e2e                                # all 35 scenarios, headless (~40s)
+npm run e2e:smoke                          # the 15 @smoke scenarios (~11s)
+npm run e2e -- --expose tags=@safety       # any tag expression: @safety, "not @api", …
+npm run e2e:open                           # the interactive Cypress runner
+```
+
+`npm run e2e` boots its own API (port 3100, `data/e2e.db` rebuilt every run) and its own
+dashboard (port 5174), so it never touches the database `npm run dev` uses. Each scenario
+arranges its own campaign through the API, acts through the browser, and asserts against both
+the screen and the server — a control that changes the page but not the dialer fails.
+
+```
+cypress/
+  e2e/*.feature                 Gherkin: what the dashboard must do, tagged @smoke / @safety / @api
+  pages/                        Page objects — the only code that knows the dashboard's markup
+  support/step_definitions/     Steps, written against page objects, never raw selectors
+  support/api.ts                Test-data setup and server-state checks
+```
+
+Reports, after every run:
+
+```bash
+npm run e2e:report          # build the Allure report from allure-results/ into allure-report/
+npm run e2e:report:open     # serve it in the browser
+```
+
+The Allure report groups scenarios by feature, shows every Gherkin step with the Cypress
+commands beneath it, ranks `@safety` scenarios as critical, and attaches a screenshot to each
+failure. A plain Cucumber report is also written to `reports/cucumber-report.html`, and failure
+screenshots to `cypress/screenshots/`. In CI (`.github/workflows/e2e.yml`) the same suite runs
+on every push and pull request to `main`, and the reports are uploaded as build artifacts.
+
 ## Understanding the codebase
 
 Read in this order: `src/core/clock.ts` (why everything else takes an injected clock), then

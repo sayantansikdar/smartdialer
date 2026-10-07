@@ -10,9 +10,12 @@ export default defineConfig({
     // Proxying `/api` to the backend means the dashboard makes same-origin requests in
     // development. That avoids CORS entirely and — more importantly — means the SSE stream
     // is a plain same-origin EventSource, with no preflight to get wrong.
+    //
+    // Overridable so the end-to-end run (scripts/e2e.mjs) can point a second dashboard at its
+    // own isolated API instead of the developer's.
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:3000',
+        target: process.env['API_PROXY_TARGET'] ?? 'http://127.0.0.1:3000',
         changeOrigin: true,
       },
     },
