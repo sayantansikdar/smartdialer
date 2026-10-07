@@ -10,3 +10,11 @@ data/
 .env.local
 .DS_Store
 *.log
+
+# Cypress end-to-end output
+reports/
+cypress/screenshots/
+cypress/videos/
+cypress/downloads/
+allure-results/
+allure-report/

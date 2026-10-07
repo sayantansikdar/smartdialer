@@ -1,0 +1,68 @@
+# Browser end-to-end tests.
+#
+# Runs on every push and pull request to main, alongside ci.yml.
+# `npm run e2e` boots an isolated API and dashboard, runs every Cypress + Cucumber
+# scenario headlessly against them, and shuts both down. The Allure and Cucumber HTML
+# reports are uploaded on every run; failure screenshots only when something failed.
+
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  cypress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # The Cypress binary lives outside node_modules, so the npm cache does not cover it.
+      - name: Cache Cypress binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/Cypress
+          key: cypress-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - run: npm ci
+
+      - run: npx cypress verify
+
+      - run: npm run e2e
+
+      # Built even when scenarios failed — that is when the report is most needed.
+      - name: Generate Allure report
+        if: always()
+        run: npm run e2e:report
+
+      - name: Upload Allure report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report
+          path: allure-report/
+          if-no-files-found: ignore
+
+      - name: Upload Cucumber report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cucumber-report
+          path: reports/
+          if-no-files-found: ignore
+
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-screenshots
+          path: cypress/screenshots/
+          if-no-files-found: ignore

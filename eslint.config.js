@@ -38,7 +38,7 @@ const REAL_TIME_BAN = [
 
 export default tseslint.config(
   {
-    ignores: ['node_modules/**', 'dist/**', 'web/dist/**', 'data/**', '*.db', '*.db-*'],
+    ignores: ['node_modules/**', 'dist/**', 'web/dist/**', 'data/**', '*.db', '*.db-*', 'reports/**', 'allure-results/**', 'allure-report/**', 'cypress/screenshots/**', 'cypress/videos/**'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
